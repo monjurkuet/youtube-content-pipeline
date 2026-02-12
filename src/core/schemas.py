@@ -281,3 +281,56 @@ class RawTranscript(BaseModel):
         if not self.segments:
             return 0.0
         return self.segments[-1].end
+
+
+class TranscriptDocument(BaseModel):
+    """Transcript document for MongoDB storage with full segments and metadata."""
+
+    video_id: str
+    source_type: Literal["youtube", "url", "local"]
+    source_url: str | None = None
+    title: str | None = None
+
+    # Transcript metadata
+    transcript_source: Literal["youtube_api", "whisper"]
+    language: str = "en"
+    segment_count: int
+    duration_seconds: float
+    total_text_length: int
+
+    # Full segments with timestamps
+    segments: list[TranscriptSegment]
+
+    # Timestamps
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    analyzed_at: datetime | None = None
+
+    def model_dump_for_mongo(self) -> dict:
+        """Convert to dict suitable for MongoDB storage."""
+        data = self.model_dump()
+        data["created_at"] = self.created_at.isoformat()
+        if self.analyzed_at:
+            data["analyzed_at"] = self.analyzed_at.isoformat()
+        return data
+
+    @classmethod
+    def from_raw_transcript(
+        cls,
+        raw_transcript: RawTranscript,
+        source_type: str,
+        source_url: str | None = None,
+        title: str | None = None,
+    ) -> "TranscriptDocument":
+        """Create transcript document from RawTranscript."""
+        return cls(
+            video_id=raw_transcript.video_id,
+            source_type=source_type,  # type: ignore
+            source_url=source_url,
+            title=title,
+            transcript_source=raw_transcript.source,
+            language=raw_transcript.language,
+            segment_count=len(raw_transcript.segments),
+            duration_seconds=raw_transcript.duration,
+            total_text_length=len(raw_transcript.full_text),
+            segments=raw_transcript.segments,
+        )

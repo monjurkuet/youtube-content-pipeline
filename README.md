@@ -50,6 +50,12 @@ A production-ready LLM-driven pipeline for analyzing YouTube videos with intelli
 - CLI tools for review and correction
 - Fuzzy matching for LLM output variations
 
+### Transcript Persistence (NEW)
+- Full transcript segments saved to MongoDB with timestamps
+- Metadata: video_id, source, duration, segment count, text length
+- Enables transcript search, retrieval, and reuse
+- Separate `transcripts` collection with proper indexing
+
 ### E2E Testing Framework
 - Real video testing (not mocked)
 - All 3 LLM agents executed
@@ -202,7 +208,8 @@ Agent 3: Synthesis (Gemini 2.5 Flash)
     |
 Structured Result
     ├── JSON file
-    └── MongoDB (if configured)
+    ├── MongoDB: video_analyses (structured analysis)
+    └── MongoDB: transcripts (full segments)
 ```
 
 ### Schema Validation Flow (NEW)
@@ -375,12 +382,26 @@ from src.database import get_db_manager
 async def db_operations():
     db = get_db_manager()
     
-    # Save analysis
+    # Save analysis (structured results)
     doc_id = await db.save_analysis(result)
-    print(f"Saved with ID: {doc_id}")
+    print(f"Analysis saved with ID: {doc_id}")
+    
+    # Save transcript (full segments with timestamps)
+    from src.core.schemas import TranscriptDocument
+    transcript_doc = TranscriptDocument.from_raw_transcript(
+        raw_transcript=raw_transcript,
+        source_type="youtube",
+        source_url="https://youtube.com/watch?v=...",
+        title="Video Title"
+    )
+    transcript_id = await db.save_transcript(transcript_doc)
+    print(f"Transcript saved with ID: {transcript_id}")
     
     # Retrieve analysis
-    doc = await db.get_analysis("video_id_123")
+    analysis = await db.get_analysis("video_id_123")
+    
+    # Retrieve transcript
+    transcript = await db.get_transcript("video_id_123")
     
     # List analyses with filters
     results = await db.list_analyses(
@@ -388,9 +409,6 @@ async def db_operations():
         content_type="bitcoin_analysis",
         primary_asset="BTC"
     )
-    
-    # Get count
-    count = await db.get_analysis_count(content_type="bitcoin_analysis")
     
     await db.close()
 
@@ -412,13 +430,63 @@ uv run python -m src.cli analyze "https://youtube.com/watch?v=KgSEzvGOBio" --ver
 
 **E2E Test validates:**
 1. Transcript acquisition (YouTube API with Whisper fallback)
-2. Agent 1: Transcript Intelligence
-3. Video download (with cookies)
-4. Frame extraction (FFmpeg)
-5. Agent 2: Frame Intelligence (Vision)
-6. Agent 3: Synthesis
-7. Result structure validation
-8. MongoDB save (if configured)
+2. ✓ Transcript persistence to MongoDB (NEW)
+3. Agent 1: Transcript Intelligence
+4. Video download (with cookies)
+5. Frame extraction (FFmpeg)
+6. Agent 2: Frame Intelligence (Vision)
+7. Agent 3: Synthesis
+8. Result structure validation
+9. MongoDB save (if configured)
+
+
+
+## MongoDB Collections
+
+When `PIPELINE_SAVE_TO_DB=true`, the pipeline stores data in two collections:
+
+### 1. `video_analyses` Collection
+Structured analysis results from the 3-agent pipeline.
+
+**Key Fields:**
+- `video_id` - Unique video identifier (indexed)
+- `content_type` - Classification (bitcoin_analysis, altcoin_analysis, etc.)
+- `primary_asset` - Main asset discussed (BTC, ETH, etc.)
+- `transcript_intelligence` - Agent 1 output (signals, price levels)
+- `frame_intelligence` - Agent 2 output (visual analysis)
+- `synthesis` - Agent 3 output (executive summary)
+- `analyzed_at` - Timestamp (indexed)
+
+### 2. `transcripts` Collection (NEW)
+Full raw transcripts with timestamps for each segment.
+
+**Key Fields:**
+- `video_id` - Unique video identifier (indexed, unique)
+- `source_type` - youtube, url, or local
+- `transcript_source` - youtube_api or whisper
+- `segment_count` - Number of transcript segments
+- `duration_seconds` - Total video duration
+- `total_text_length` - Character count of full text
+- `segments` - Array of timestamped text segments:
+  ```json
+  {
+    "text": "Bitcoin bounced from $60,000...",
+    "start": 0.0,
+    "duration": 4.32
+  }
+  ```
+- `created_at` - When transcript was saved (indexed)
+- `language` - Transcript language (indexed)
+
+**Usage:**
+```python
+# Retrieve full transcript
+transcript = await db.get_transcript("KgSEzvGOBio")
+
+# Access segments
+for segment in transcript["segments"]:
+    print(f"[{segment['start']:.1f}s] {segment['text']}")
+```
 
 
 

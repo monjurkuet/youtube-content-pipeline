@@ -6,7 +6,7 @@ from typing import Any
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from src.core.config import get_settings
-from src.core.schemas import VideoAnalysisResult
+from src.core.schemas import VideoAnalysisResult, TranscriptDocument
 
 
 class MongoDBManager:
@@ -17,6 +17,7 @@ class MongoDBManager:
         self.client = AsyncIOMotorClient(self.settings.mongodb_url)
         self.db = self.client[self.settings.mongodb_database]
         self.analyses = self.db.video_analyses
+        self.transcripts = self.db.transcripts
 
     async def init_indexes(self) -> None:
         """Initialize database indexes."""
@@ -25,6 +26,15 @@ class MongoDBManager:
         await self.analyses.create_index("source_type")
         await self.analyses.create_index("content_type")
         await self.analyses.create_index("primary_asset")
+        # Also init transcript indexes
+        await self.init_transcript_indexes()
+
+    async def init_transcript_indexes(self) -> None:
+        """Initialize transcript collection indexes."""
+        await self.transcripts.create_index("video_id", unique=True)
+        await self.transcripts.create_index("created_at")
+        await self.transcripts.create_index("transcript_source")
+        await self.transcripts.create_index("language")
 
     async def save_analysis(self, result: VideoAnalysisResult) -> str:
         """Save video analysis to MongoDB.
@@ -135,6 +145,46 @@ class MongoDBManager:
     async def close(self) -> None:
         """Close MongoDB connection."""
         self.client.close()
+
+    async def save_transcript(self, transcript_doc: "TranscriptDocument") -> str:
+        """Save transcript to MongoDB.
+
+        Args:
+            transcript_doc: TranscriptDocument to save
+
+        Returns:
+            Document ID as string
+        """
+        from src.core.schemas import TranscriptDocument
+
+        doc = transcript_doc.model_dump_for_mongo()
+        doc["updated_at"] = datetime.utcnow().isoformat()
+
+        result_op = await self.transcripts.replace_one(
+            {"video_id": transcript_doc.video_id}, doc, upsert=True
+        )
+
+        if result_op.upserted_id:
+            return str(result_op.upserted_id)
+
+        saved_doc = await self.transcripts.find_one({"video_id": transcript_doc.video_id})
+        if saved_doc is None:
+            raise RuntimeError("Failed to save transcript to database")
+        return str(saved_doc["_id"])
+
+    async def get_transcript(self, video_id: str) -> dict[str, Any] | None:
+        """Retrieve transcript from MongoDB.
+
+        Args:
+            video_id: Video identifier
+
+        Returns:
+            Transcript document as dict, or None if not found
+        """
+        doc = await self.transcripts.find_one({"video_id": video_id})
+        if doc and "_id" in doc:
+            doc["_id"] = str(doc["_id"])
+        return doc
 
 
 # Singleton instance for application-wide use

@@ -6,10 +6,11 @@
 - **Clean slate, production-ready architecture only.** Don't maintain backward compatibility, don't need gradual migration.
 - **Use bun for Node.js tasks** when applicable.
 
-### Optimization Guidelines  
+### Optimization Guidelines
 - **Video download caching** is implemented and beneficial
-- **Whisper model caching** is implemented and beneficial  
-- **DO NOT implement transcript caching** - adds unnecessary complexity without significant benefit
+- **Whisper model caching** is implemented and beneficial
+- **Transcript caching** - NOT implemented (adds unnecessary complexity without significant benefit)
+  - **NOTE:** Transcript *persistence* to MongoDB IS implemented (data storage, not caching)
 - **Cookie caching (24h)** is implemented for YouTube authentication
 - **Focus on eliminating redundant operations** rather than adding complex caching layers
 

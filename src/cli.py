@@ -6,6 +6,7 @@ from pathlib import Path
 import typer
 from rich import print as rprint
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -57,7 +58,7 @@ def analyze(
             console.print_json(json.dumps(result.model_dump_for_mongo(), default=str))
 
     except Exception as e:
-        rprint(f"[red]✗ Error: {e}[/red]")
+        rprint(f"[red]✗ Error: {escape(str(e))}[/red]")
         raise typer.Exit(1) from e
 
 
@@ -174,7 +175,7 @@ def quick(
         rprint()
 
     except Exception as e:
-        rprint(f"[red]Error: {e}[/red]")
+        rprint(f"[red]Error: {escape(str(e))}[/red]")
         raise typer.Exit(1)
 
 
@@ -269,7 +270,7 @@ def review_normalizations(
         rprint("[dim]To correct a normalization, use the correct command with the ID[/dim]")
 
     except Exception as e:
-        rprint(f"[red]Error: {e}[/red]")
+        rprint(f"[red]Error: {escape(str(e))}[/red]")
         raise typer.Exit(1)
 
 
@@ -298,7 +299,7 @@ def correct_normalization(
             raise typer.Exit(1)
 
     except Exception as e:
-        rprint(f"[red]Error: {e}[/red]")
+        rprint(f"[red]Error: {escape(str(e))}[/red]")
         raise typer.Exit(1)
 
 
@@ -332,7 +333,7 @@ def reset_normalizer(
         rprint("[green]✓ Normalizer database reset successfully[/green]")
 
     except Exception as e:
-        rprint(f"[red]Error: {e}[/red]")
+        rprint(f"[red]Error: {escape(str(e))}[/red]")
         raise typer.Exit(1)
 
 

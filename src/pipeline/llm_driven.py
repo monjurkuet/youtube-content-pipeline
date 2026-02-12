@@ -12,6 +12,7 @@ from src.core.exceptions import PipelineError
 from src.core.schemas import (
     ProcessingMetadata,
     RawTranscript,
+    TranscriptDocument,
     VideoAnalysisResult,
 )
 from src.llm_agents import (
@@ -91,6 +92,31 @@ class LLMDrivenPipeline:
                 console.print(
                     f"   [dim]   Transcript length: {len(raw_transcript.full_text)} chars[/dim]"
                 )
+
+                # Save transcript to database if enabled
+                if self.settings.pipeline_save_to_db:
+                    import asyncio
+
+                    async def _save_transcript() -> str:
+                        from src.database import get_db_manager
+
+                        db = get_db_manager()
+                        transcript_doc = TranscriptDocument.from_raw_transcript(
+                            raw_transcript=raw_transcript,
+                            source_type=source_type,  # type: ignore
+                            source_url=source if source_type in ("youtube", "url") else None,
+                            title=None,
+                        )
+                        doc_id = await db.save_transcript(transcript_doc)
+                        return doc_id
+
+                    try:
+                        doc_id = asyncio.run(_save_transcript())
+                        console.print(
+                            f"   [dim]Database: Transcript saved (ID: {doc_id[:16]}...)[/dim]"
+                        )
+                    except Exception as e:
+                        console.print(f"   [yellow]Database: Transcript save failed: {e}[/yellow]")
 
                 # Step 2: Transcript Intelligence (LLM #1)
                 task = progress.add_task("🧠 Agent 1: Analyzing transcript...", total=None)
