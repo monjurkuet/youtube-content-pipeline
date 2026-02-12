@@ -1,0 +1,69 @@
+You are analyzing frames from a trading video. Review all frames and select the most informative ones.
+
+FRAMES TO ANALYZE:
+{frame_batch_json}
+
+INSTRUCTIONS:
+
+1. GROUP SIMILAR FRAMES
+   - Identify frames showing the same chart/scene/angle
+   - Assign redundancy_group numbers to similar frames (frames in same group show similar content)
+
+2. SELECT BEST REPRESENTATIVE from each group
+   Criteria for selection:
+   - Highest visual clarity and readability
+   - Most complete information visible
+   - Clearest text/OCR readability
+   - Best angle/view of charts
+   Mark selected frames as "keep": true
+
+3. DEEP ANALYSIS for kept frames:
+   For each kept frame, analyze:
+   - content_type: chart_analysis, ui_navigation, speaker, or other
+   - asset: What's being charted (BTC/USD, ETH/USDT, etc.)
+   - timeframe: 1H, 4H, Daily, Weekly, etc.
+   - current_price: Price shown on chart
+   - visible_indicators: All indicators visible (EMA, RSI, Volume, etc.)
+   - patterns: Chart patterns visible
+   - key_levels: Object with support and resistance arrays
+   - trading_signals: Breakouts, entries, etc. visible
+   - sentiment: bullish, bearish, or neutral
+   - notable_elements: Any unusual or important visual cues
+
+4. SUMMARY STATS
+   - total_frames_analyzed: total count
+   - frames_selected: number kept
+   - redundancy_groups_found: number of similarity groups
+   - primary_assets_visualized: list of main assets shown
+
+Output as JSON:
+{
+  "frame_analyses": [
+    {
+      "frame_number": 1,
+      "timestamp": 45,
+      "keep": true,
+      "importance_score": 0.92,
+      "redundancy_group": null,
+      "reason": "clear chart showing breakout",
+      "content_type": "chart_analysis",
+      "analysis": {
+        "asset": "BTC/USD",
+        "timeframe": "4H",
+        "current_price": "$67,450",
+        "visible_indicators": ["EMA 20", "Volume"],
+        "patterns": ["ascending_triangle"],
+        "key_levels": {"support": ["$66,800"], "resistance": ["$68,000"]},
+        "trading_signals": ["breakout_attempt"],
+        "sentiment": "bullish",
+        "notable_elements": ["high_volume"]
+      }
+    }
+  ],
+  "summary": {
+    "total_frames_analyzed": 15,
+    "frames_selected": 8,
+    "redundancy_groups_found": 4,
+    "primary_assets_visualized": ["BTC", "ETH"]
+  }
+}

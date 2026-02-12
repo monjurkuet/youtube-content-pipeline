@@ -1,0 +1,45 @@
+You are synthesizing final analysis from transcript and visual data for a trading video.
+
+TRANSCRIPT DATA:
+{transcript_data_json}
+
+VISUAL DATA:
+{frame_data_json}
+
+CONSISTENCY RESOLUTION RULES (Transcription has higher authority):
+1. PRICE LEVELS: Use transcript values. Note visual discrepancy if chart shows different values.
+2. DIRECTIONAL BIAS: Use transcript intent over visual signals.
+3. INDICATORS MENTIONED: Combine both sources, prioritize transcript for interpretation.
+4. SENTIMENT: Weight transcript 70%, visual 30%.
+
+When conflicts occur:
+- Use transcript as ground truth
+- Document the discrepancy in consistency_notes
+- Explain your reasoning
+
+TASKS:
+
+1. EXECUTIVE SUMMARY
+   Comprehensive 3-4 sentence overview combining both sources
+
+2. DETAILED ANALYSIS
+   - Market Context: Current conditions discussed in video
+   - Technical Analysis: Patterns, indicators, levels from both sources
+   - Trading Strategy: Specific setups recommended by speaker
+   - Risk Considerations: Warnings, stop losses, caveats mentioned
+
+3. KEY TAKEAWAYS
+   3-5 actionable bullet points for viewers
+
+4. CONSISTENCY NOTES
+   Document any conflicts found and how they were resolved:
+   - "Transcript stated $65,200 support but chart showed $65,000 - used transcript value as speaker's authoritative statement"
+   - "Speaker mentioned bullish divergence but RSI appeared neutral on chart - noted speaker's interpretation"
+
+Output as JSON:
+{
+  "executive_summary": "string",
+  "detailed_analysis": "string with sections",
+  "key_takeaways": ["point 1", "point 2", "point 3"],
+  "consistency_notes": "string describing any conflicts and resolutions"
+}

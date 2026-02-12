@@ -1,0 +1,51 @@
+# Python
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Cache directories
+.ruff_cache
+.mypy_cache
+.pytest_cache
+.sessions
+
+# Environment
+.env
+.env.local
+
+# Logs and results
+agent_laboratory/logs/
+agent_laboratory/results/
+*.log
+
+# Temporary files
+*.tmp
+/tmp/
+*.mp4
+*.mp3
+*.m4a
+*.wav
+*.jpg
+*.jpeg
+*.png
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+*.Zone.Identifier
+
+# Build/dist
+build/
+dist/
+*.egg-info/
