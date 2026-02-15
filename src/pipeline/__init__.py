@@ -1,5 +1,5 @@
 """Pipeline orchestration module."""
 
-from src.pipeline.llm_driven import LLMDrivenPipeline, analyze_video
+from src.pipeline.transcript import TranscriptPipeline, get_transcript
 
-__all__ = ["LLMDrivenPipeline", "analyze_video"]
+__all__ = ["TranscriptPipeline", "get_transcript"]

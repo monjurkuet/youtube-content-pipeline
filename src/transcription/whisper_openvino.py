@@ -15,6 +15,31 @@ os.environ["OPENVINO_CPU_THREADS"] = "4"
 _MODEL_REGISTRY = {}
 
 
+def _get_preferred_device() -> str:
+    """Get preferred device, checking if GPU is actually usable."""
+    preferred = os.environ.get("OPENVINO_DEVICE", "AUTO")
+
+    if preferred in ("CPU", "AUTO"):
+        return preferred
+
+    # If GPU is requested, verify it's available
+    if preferred == "GPU":
+        try:
+            import openvino as ov
+
+            core = ov.Core()
+            devices = core.available_devices
+            if "GPU" in devices:
+                return "GPU"
+            else:
+                print("⚠️  GPU requested but not available, falling back to CPU")
+                return "CPU"
+        except Exception:
+            return "CPU"
+
+    return preferred
+
+
 class OpenVINOWhisperTranscriber:
     """Whisper model optimized for Intel GPU/CPU using OpenVINO."""
 
@@ -28,11 +53,11 @@ class OpenVINOWhisperTranscriber:
 
         Args:
             model_id: HuggingFace model ID for Whisper
-            device: Device to use (CPU, GPU, AUTO). If None, auto-detects.
+            device: Device to use (CPU, GPU, AUTO). If None, uses OPENVINO_DEVICE env var or AUTO.
             cache_dir: Cache directory for model files
         """
         self.model_id = model_id
-        self.device = device or "AUTO"
+        self.device = device or _get_preferred_device()
         self.cache_dir = Path(cache_dir or "~/.cache/whisper_openvino").expanduser()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -60,51 +85,52 @@ class OpenVINOWhisperTranscriber:
         from optimum.intel.openvino import OVModelForSpeechSeq2Seq
         from transformers import AutoProcessor
 
-        try:
-            # Load model and processor
-            model = OVModelForSpeechSeq2Seq.from_pretrained(
-                self.model_id,
-                export=True,
-                device=self.device,
-                cache_dir=str(self.cache_dir),
-            )
-            processor = AutoProcessor.from_pretrained(self.model_id)
-            print("✅ Model loaded successfully")
+        # Try loading on requested device
+        devices_to_try = [self.device]
 
-            # Store in registry to reuse across instances
-            _MODEL_REGISTRY[self.cache_key] = (model, processor)
+        # Add fallback devices
+        if self.device not in ("CPU",):
+            devices_to_try.append("CPU")
 
-            # Store in instance
-            self.model = model
-            self.processor = processor
+        last_error = None
+        for device in devices_to_try:
+            try:
+                cache_key = f"{self.model_id}__{device}"
 
-        except Exception as e:
-            if self.device == "GPU":
-                print(f"⚠️  Failed to load on GPU: {e}")
-                print("🔄 Falling back to CPU...")
-                fallback_device = "CPU"
-                fallback_key = f"{self.model_id}__{fallback_device}"
+                # Check if already cached in registry
+                if cache_key in _MODEL_REGISTRY:
+                    self.model, self.processor = _MODEL_REGISTRY[cache_key]
+                    self.device = device
+                    print(f"✅ Using cached model on {device}")
+                    return
 
-                # Check if fallback model is already cached
-                if fallback_key in _MODEL_REGISTRY:
-                    self.model, self.processor = _MODEL_REGISTRY[fallback_key]
-                    print("✅ Using cached CPU model")
-                else:
-                    model = OVModelForSpeechSeq2Seq.from_pretrained(
-                        self.model_id,
-                        export=True,
-                        device=fallback_device,
-                        cache_dir=str(self.cache_dir),
-                    )
-                    processor = AutoProcessor.from_pretrained(self.model_id)
-                    print("✅ Model loaded on CPU")
+                # Load model and processor
+                model = OVModelForSpeechSeq2Seq.from_pretrained(
+                    self.model_id,
+                    export=True,
+                    device=device,
+                    cache_dir=str(self.cache_dir),
+                )
+                processor = AutoProcessor.from_pretrained(self.model_id)
+                print(f"✅ Model loaded on {device}")
 
-                    # Store fallback in registry
-                    _MODEL_REGISTRY[fallback_key] = (model, processor)
-                    self.model = model
-                    self.processor = processor
-            else:
-                raise RuntimeError(f"Failed to load Whisper model: {e}") from e
+                # Store in registry to reuse across instances
+                _MODEL_REGISTRY[cache_key] = (model, processor)
+
+                # Store in instance
+                self.model = model
+                self.processor = processor
+                self.device = device
+                return
+
+            except Exception as e:
+                last_error = e
+                if device != "CPU":
+                    print(f"⚠️  Failed on {device}: {str(e)[:100]}")
+                    print("🔄 Trying fallback device...")
+                continue
+
+        raise RuntimeError(f"Failed to load Whisper model on any device: {last_error}")
 
     def transcribe(
         self,
@@ -162,36 +188,62 @@ class OpenVINOWhisperTranscriber:
 
         num_chunks = (len(audio_data) + samples_per_chunk - 1) // samples_per_chunk
 
-        for i in range(0, len(audio_data), samples_per_chunk):
-            chunk_num = i // samples_per_chunk + 1
-            chunk = audio_data[i : i + samples_per_chunk]
+        try:
+            for i in range(0, len(audio_data), samples_per_chunk):
+                chunk_num = i // samples_per_chunk + 1
+                chunk = audio_data[i : i + samples_per_chunk]
 
-            # Pad last chunk if needed
-            if len(chunk) < samples_per_chunk:
-                chunk = np.pad(chunk, (0, samples_per_chunk - len(chunk)))
+                # Pad last chunk if needed
+                if len(chunk) < samples_per_chunk:
+                    chunk = np.pad(chunk, (0, samples_per_chunk - len(chunk)))
 
-            # Process chunk
-            inputs = self.processor(chunk, sampling_rate=16000, return_tensors="pt").input_features
+                # Process chunk
+                inputs = self.processor(
+                    chunk, sampling_rate=16000, return_tensors="pt"
+                ).input_features
 
-            # Generate
-            with torch.no_grad():
-                predicted_ids = self.model.generate(inputs, max_new_tokens=400)
+                # Generate
+                with torch.no_grad():
+                    predicted_ids = self.model.generate(inputs, max_new_tokens=400)
 
-            # Decode
-            transcription = self.processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
+                # Decode
+                transcription = self.processor.batch_decode(
+                    predicted_ids, skip_special_tokens=True
+                )[0]
 
-            if transcription.strip():
-                full_transcription.append(transcription)
-                segments.append(
-                    {
-                        "id": chunk_num,
-                        "start": i / 16000,
-                        "end": min((i + samples_per_chunk) / 16000, duration),
-                        "text": transcription,
-                    }
-                )
-                progress = chunk_num / num_chunks * 100
-                print(f"   [{progress:5.1f}%] {transcription[:60]}...")
+                if transcription.strip():
+                    full_transcription.append(transcription)
+                    segments.append(
+                        {
+                            "id": chunk_num,
+                            "start": i / 16000,
+                            "end": min((i + samples_per_chunk) / 16000, duration),
+                            "text": transcription,
+                        }
+                    )
+                    progress = chunk_num / num_chunks * 100
+                    print(f"   [{progress:5.1f}%] {transcription[:60]}...")
+
+        except Exception as e:
+            # If inference fails on GPU, try to fall back to CPU
+            is_gpu = self.device == "GPU" or (
+                self.device == "AUTO" and "GPU" in self._get_available_devices()
+            )
+            if is_gpu:
+                print(f"⚠️  Inference error on GPU: {str(e)[:100]}")
+                print("🔄 Retrying on CPU...")
+
+                # Force CPU reload
+                self.device = "CPU"
+                self.cache_key = f"{self.model_id}__CPU"
+                self.model = None
+                self.processor = None
+                self._load_model()
+
+                # Retry transcription
+                return self.transcribe(audio_path, language, chunk_length)
+
+            raise RuntimeError(f"Transcription failed: {e}") from e
 
         print("✅ Transcription complete!")
 
@@ -203,6 +255,16 @@ class OpenVINOWhisperTranscriber:
             "duration": duration,
             "language": language,
         }
+
+    def _get_available_devices(self) -> list[str]:
+        """Get list of available OpenVINO devices."""
+        try:
+            import openvino as ov
+
+            core = ov.Core()
+            return core.available_devices
+        except Exception:
+            return ["CPU"]
 
 
 def transcribe_audio(

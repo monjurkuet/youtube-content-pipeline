@@ -1,6 +1,6 @@
-"""Video Content Pipeline - LLM-Driven Analysis."""
+"""Transcription Pipeline - Get transcripts and save to DB."""
 
-from src.pipeline import LLMDrivenPipeline, analyze_video
+from src.pipeline import TranscriptPipeline, get_transcript
 
-__version__ = "0.3.0"
-__all__ = ["LLMDrivenPipeline", "analyze_video"]
+__version__ = "0.4.0"
+__all__ = ["TranscriptPipeline", "get_transcript"]

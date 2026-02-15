@@ -1,66 +1,15 @@
-# YouTube Content Pipeline
+# YouTube Transcription Pipeline
 
-A production-ready LLM-driven pipeline for analyzing YouTube videos with intelligent transcript and visual analysis. Features 3-agent architecture, automatic cookie management, and robust schema validation with LLM-based repair.
+A simple, robust pipeline for transcribing YouTube videos and saving transcripts to MongoDB. Features automatic cookie management, Whisper fallback, and REST API.
 
 ## Features
 
-### LLM-Driven 3-Agent Pipeline
-- **Agent 1** (Gemini 2.5 Flash) - Transcript intelligence extraction
-  - Trading signals, price levels, patterns
-  - Frame extraction planning
-  - Content classification
-  
-- **Agent 2** (qwen3-vl-plus) - Visual frame analysis
-  - Batch frame analysis at key moments
-  - Chart pattern recognition
-  - Duplicate removal
-  
-- **Agent 3** (Gemini 2.5 Flash) - Synthesis
-  - Combines transcript + visual data
-  - Resolves conflicts
-  - Generates executive summary
-
-### Robust Error Handling (NEW)
-- **Hybrid Schema Validation**
-  - Phase 1: Programmatic normalization (enums, types)
-  - Phase 2: Programmatic fixes (defaults, fuzzy matching)
-  - Phase 3: LLM-based repair for complex errors
-  - Prevents data loss from validation failures
-  
-- **JSON Repair**
-  - Automatic fixing of malformed JSON
-  - Escape newlines, fix trailing commas
-  - Extract partial data when possible
-
-### Transcription Fallback Chain
-- **YouTube videos**: Try YouTube Transcript API first, fallback to yt-dlp + Whisper
-- **Local videos**: Direct OpenVINO Whisper transcription
-- Uses browser cookies for authenticated downloads
-- OpenVINO Whisper with model caching for performance
-
-### Auto Cookie Management
-- Automatic extraction from Chrome
-- 24-hour cache with auto-refresh
-- No manual setup required
-- Used for both video and audio downloads
-
-### Adaptive Price Level Normalization
-- Context-aware classification
-- Self-improving SQLite database
-- CLI tools for review and correction
-- Fuzzy matching for LLM output variations
-
-### Transcript Persistence (NEW)
-- Full transcript segments saved to MongoDB with timestamps
-- Metadata: video_id, source, duration, segment count, text length
-- Enables transcript search, retrieval, and reuse
-- Separate `transcripts` collection with proper indexing
-
-### E2E Testing Framework
-- Real video testing (not mocked)
-- All 3 LLM agents executed
-- Validates complete data flow
-- Detailed timing and metrics
+- **Simple 2-Step Pipeline**: Get transcript → Save to MongoDB
+- **Automatic Fallback**: YouTube API → Whisper transcription
+- **Auto Cookie Management**: Extracts cookies from Chrome automatically
+- **OpenVINO Whisper**: Optimized transcription with GPU/CPU support
+- **REST API**: FastAPI endpoints for async transcription jobs
+- **MongoDB Storage**: Full transcripts with timestamps
 
 ## Installation
 
@@ -71,200 +20,90 @@ cd youtube-content-pipeline
 
 # Install dependencies
 uv sync
-
-# Or with pip
-pip install -e ".[dev]"
 ```
 
 ### Requirements
 
 - Python 3.12+
-- FFmpeg (for video processing)
+- FFmpeg (for audio processing)
 - MongoDB (optional, for data storage)
 - Chrome browser (for cookie extraction)
-- Deno or Node.js (for YouTube JS challenges)
+- Node.js or Deno (for YouTube JS challenges)
 
 ## Quick Start
 
-### Analyze a YouTube Video
+### Transcribe a YouTube Video
 
 ```bash
-# Basic analysis
-uv run python -m src.cli analyze "https://youtube.com/watch?v=VIDEO_ID"
+# Basic transcription
+uv run python -m src.cli transcribe "https://youtube.com/watch?v=VIDEO_ID"
 
 # With verbose output
-uv run python -m src.cli analyze "https://youtube.com/watch?v=VIDEO_ID" --verbose
+uv run python -m src.cli transcribe "https://youtube.com/watch?v=VIDEO_ID" --verbose
 
 # Save to file
-uv run python -m src.cli analyze "URL" --output analysis.json
+uv run python -m src.cli transcribe "URL" --output transcript.json
 
 # Skip database save
-uv run python -m src.cli analyze "URL" --no-db
+uv run python -m src.cli transcribe "URL" --no-db
 ```
 
-### Analyze a Local Video
+### Batch Transcription
 
 ```bash
-# Local video file
-uv run python -m src.cli analyze "/path/to/video.mp4" --verbose
+# Create a file with video sources (one per line)
+echo "https://youtube.com/watch?v=VIDEO_ID1" > sources.txt
+echo "https://youtube.com/watch?v=VIDEO_ID2" >> sources.txt
+
+# Run batch transcription
+uv run python -m src.cli batch sources.txt
 ```
 
-### Check Cookie Status
+### Start the API Server
 
 ```bash
-# Check if cookies are working
-uv run python -m src.video.cookie_manager --status
-
-# Force re-extraction
-uv run python -m src.video.cookie_manager --invalidate
+uv run uvicorn src.api.main:app --reload
 ```
 
-### Run E2E Test
-
-```bash
-# Test with specific video
-uv run python agent_laboratory/framework/run_e2e_test.py
-
-# Or use the CLI
-uv run python -m src.cli analyze "https://youtube.com/watch?v=KgSEzvGOBio" --verbose
-```
+API endpoints:
+- `POST /api/v1/videos/transcribe` - Submit video for transcription
+- `GET /api/v1/videos/jobs/{job_id}` - Check job status
+- `GET /api/v1/transcripts/{video_id}` - Get transcript
+- `GET /api/v1/transcripts/` - List transcripts
 
 ## Configuration
 
 Create a `.env` file:
 
 ```bash
-# MongoDB (optional)
-MONGODB_URL=mongodb+srv://user:password@cluster.mongodb.net/
+# MongoDB
+MONGODB_URL=mongodb://localhost:27017
 MONGODB_DATABASE=video_pipeline
 
-# LLM API
-LLM_API_BASE=http://localhost:8087/v1
-LLM_API_KEY=sk-dummy
+# Audio Processing
+AUDIO_FORMAT=mp3
+AUDIO_BITRATE=128k
 
-# Model Selection
-LLM_TRANSCRIPT_MODEL=gemini-2.5-flash    # Agent 1
-LLM_FRAME_MODEL=qwen3-vl-plus             # Agent 2  
-LLM_SYNTHESIS_MODEL=gemini-2.5-flash      # Agent 3
-
-# Schema Repair (NEW)
-ENABLE_LLM_REPAIR=true                    # Enable LLM fallback
-LLM_REPAIR_TEMPERATURE=0.1               # Low temp for precision
-
-# Cookie Management (NEW)
-COOKIE_CACHE_HOURS=24                    # Auto-refresh cookies daily
-AUTO_EXTRACT_COOKIES=true                # Auto-extract from Chrome
-
-# Video Processing
-VIDEO_RESOLUTION=720p                    # 720p for faster download
-MAX_FRAMES_TO_EXTRACT=20                 # Limit API calls
-FRAME_BATCH_SIZE=15                      # Batch size for frame analysis
-
-# Processing
-PIPELINE_WORK_DIR=/tmp/llm_video_analysis
-PIPELINE_ENABLE_CACHE=true
-PIPELINE_SAVE_TO_DB=true              # Enable MongoDB save (requires MONGODB_URL)
-
-# Timeouts
-TRANSCRIPT_TIMEOUT=60
-FRAME_TIMEOUT=90
-SYNTHESIS_TIMEOUT=60
-
-# Whisper (for fallback transcription)
+# Whisper (OpenVINO)
 OPENVINO_WHISPER_MODEL=openai/whisper-base
 OPENVINO_DEVICE=AUTO                   # AUTO, GPU, or CPU
+
+# Pipeline
+PIPELINE_WORK_DIR=/tmp/transcription_pipeline
+PIPELINE_SAVE_TO_DB=true
 ```
 
 ## Architecture
 
-### 3-Agent Pipeline Flow
-
 ```
 YouTube URL / Local Video
     |
-Transcript Acquisition
+Step 1: Get Transcript
     ├── YouTube Transcript API (fast)
     └── Fallback: yt-dlp + OpenVINO Whisper (with cookies)
     |
-Agent 1: Transcript Intelligence (Gemini 2.5 Flash)
-    ├── Content classification
-    ├── Trading signals extraction
-    ├── Price level identification
-    └── Frame extraction planning
-    |
-Video Download (YouTube only, with cookies)
-    |
-Frame Extraction (FFmpeg, using LLM plan)
-    |
-Agent 2: Frame Intelligence (qwen3-vl-plus)
-    ├── Batch frame analysis
-    ├── Chart pattern recognition
-    └── Duplicate removal
-    |
-Agent 3: Synthesis (Gemini 2.5 Flash)
-    ├── Combines transcript + visual data
-    ├── Resolves conflicts
-    └── Generates executive summary
-    |
-Structured Result
-    ├── JSON file
-    ├── MongoDB: video_analyses (structured analysis)
-    └── MongoDB: transcripts (full segments)
-```
-
-### Schema Validation Flow (NEW)
-
-```
-LLM Output
-    |
-JSON Repair (syntax fixes)
-    |
-Parse JSON
-    |
-Phase 1: Programmatic Normalization
-    - Enum normalization
-    - Type coercion
-    |
-Validate
-    |--PASS?--> Success
-    |--FAIL-->
-Phase 2: Programmatic Fixes
-    - Fuzzy matching
-    - Default values
-    |
-Validate
-    |--PASS?--> Success
-    |--FAIL-->
-Phase 3: LLM Schema Repair
-    - Context-aware fixes
-    - Hallucination prevention
-    |
-Validate
-    |--PASS?--> Success
-    |--FAIL--> Error
-```
-
-### Auto Cookie Management
-
-Browser cookies are automatically used for:
-- **Video downloads** (YouTube videos for frame extraction)
-- **Audio downloads** (for Whisper transcription fallback)
-
-```
-Download Request
-    |
-Check Cookie Cache
-    |
-Fresh cookies (<24h)?
-    |--YES--> Use cached cookies
-    |--NO-->
-Auto-extract from Chrome
-    |
-Validate auth cookies
-    |
-Cache for 24 hours
-    |
-Use for download
+Step 2: Save to MongoDB
+    └── Full transcript with timestamps
 ```
 
 ## Project Structure
@@ -272,108 +111,49 @@ Use for download
 ```
 src/
 ├── __init__.py                 # Package exports
-├── __main__.py                 # Module entry point
-├── cli.py                      # Main CLI interface
+├── cli.py                      # CLI interface
 ├── database.py                 # MongoDB integration
+├── api/
+│   ├── main.py                 # FastAPI app
+│   ├── routers/
+│   │   ├── videos.py           # Transcription endpoints
+│   │   └── transcripts.py      # Transcript retrieval
+│   └── models/
+│       └── requests.py         # Pydantic models
 ├── core/
-│   ├── __init__.py
 │   ├── config.py               # Configuration settings
 │   ├── exceptions.py           # Custom exceptions
-│   ├── models.py               # Dataclass models
-│   ├── normalizer.py           # Price level normalization
 │   └── schemas.py              # Pydantic models
-├── llm_agents/
-│   ├── __init__.py
-│   ├── base.py                 # Base agent with 3-phase validation
-│   ├── batch_processor.py      # Chunked transcript processing
-│   ├── factory.py              # LLM client factory
-│   ├── frame_agent.py          # Agent 2: Frame analysis
-│   ├── prompts/                # Prompt templates
-│   ├── response_utils.py       # JSON repair & normalization
-│   ├── schema_repair_agent.py  # LLM schema repair
-│   ├── synthesis_agent.py      # Agent 3: Synthesis
-│   └── transcript_agent.py     # Agent 1: Transcript analysis
 ├── pipeline/
-│   ├── __init__.py
-│   └── llm_driven.py           # Main orchestrator
+│   └── transcript.py           # Main pipeline
 ├── transcription/
-│   ├── __init__.py
 │   ├── handler.py              # Transcription with fallback
-│   └── whisper_openvino.py     # OpenVINO Whisper implementation
+│   └── whisper_openvino.py     # OpenVINO Whisper
 └── video/
-    ├── __init__.py
     ├── cookie_manager.py       # Browser cookie management
-    └── handler.py              # Video download & frame extraction
-
-agent_laboratory/               # Testing & documentation
-├── framework/
-│   ├── README.md
-│   └── run_e2e_test.py         # E2E test runner
-├── extract_cookies.py          # Manual cookie extraction
-├── *.md                        # Implementation documentation
-├── logs/                       # Test logs (gitignored)
-└── results/                    # Test results (gitignored)
+    └── handler.py              # Audio download
 ```
 
-## Advanced Usage
-
-### Manage Price Level Normalizations
-
-```bash
-# Review recent normalizations
-uv run python -m src.cli review-normalizations --limit 20
-
-# Show low confidence (need review)
-uv run python -m src.cli review-normalizations --max-confidence 0.5
-
-# Show statistics
-uv run python -m src.cli review-normalizations --stats
-
-# Correct a normalization
-uv run python -m src.cli correct-normalization 42 entry
-```
-
-### Programmatic API
+## Programmatic API
 
 ```python
-from src.pipeline.llm_driven import analyze_video
+from src.pipeline import get_transcript, TranscriptPipeline
 
-# Analyze a YouTube video
-result = analyze_video(
-    source="https://youtube.com/watch?v=VIDEO_ID"
-)
+# Simple transcription
+result = get_transcript("https://youtube.com/watch?v=VIDEO_ID")
 
-# Or analyze a local video
-result = analyze_video(
-    source="/path/to/local/video.mp4"
-)
-
-# Access structured data
+# Access results
 print(result.video_id)
-print(result.content_type)                    # "bitcoin_analysis"
-print(len(result.transcript_intelligence.signals))   # Number of signals
-print(result.synthesis.executive_summary)
+print(result.segment_count)
+print(result.duration_seconds)
+print(result.transcript_source)  # "youtube_api" or "whisper"
+
+# With custom settings
+pipeline = TranscriptPipeline(work_dir="/custom/path")
+result = pipeline.process("URL", save_to_db=False)
 ```
 
-### Custom Configuration
-
-```python
-from src.video.handler import VideoHandler
-from src.video.cookie_manager import get_cookie_manager
-
-# Custom cookie settings
-handler = VideoHandler(
-    cookie_cache_hours=12,        # Refresh every 12 hours
-    auto_extract_cookies=True
-)
-
-# Or use cookie manager directly
-manager = get_cookie_manager(cache_duration_hours=6)
-manager.ensure_cookies()
-manager.invalidate_cache()  # Force refresh
-```
-
-### Database Operations
+## Database Operations
 
 ```python
 import asyncio
@@ -381,143 +161,27 @@ from src.database import get_db_manager
 
 async def db_operations():
     db = get_db_manager()
-    
-    # Save analysis (structured results)
-    doc_id = await db.save_analysis(result)
-    print(f"Analysis saved with ID: {doc_id}")
-    
-    # Save transcript (full segments with timestamps)
-    from src.core.schemas import TranscriptDocument
-    transcript_doc = TranscriptDocument.from_raw_transcript(
-        raw_transcript=raw_transcript,
-        source_type="youtube",
-        source_url="https://youtube.com/watch?v=...",
-        title="Video Title"
-    )
-    transcript_id = await db.save_transcript(transcript_doc)
-    print(f"Transcript saved with ID: {transcript_id}")
-    
-    # Retrieve analysis
-    analysis = await db.get_analysis("video_id_123")
-    
-    # Retrieve transcript
-    transcript = await db.get_transcript("video_id_123")
-    
-    # List analyses with filters
-    results = await db.list_analyses(
-        limit=10,
-        content_type="bitcoin_analysis",
-        primary_asset="BTC"
-    )
-    
+
+    # Get transcript
+    transcript = await db.get_transcript("video_id")
+
+    # List transcripts
+    transcripts = await db.list_transcripts(limit=10)
+
     await db.close()
 
-# Run async operations
 asyncio.run(db_operations())
 ```
 
-## Testing
-
-### E2E Test Framework
+## Cookie Management
 
 ```bash
-# Run full E2E test (all 3 agents + database)
-uv run python agent_laboratory/framework/run_e2e_test.py
+# Check cookie status
+uv run python -m src.video.cookie_manager --status
 
-# Or test via CLI
-uv run python -m src.cli analyze "https://youtube.com/watch?v=KgSEzvGOBio" --verbose
+# Force re-extraction
+uv run python -m src.video.cookie_manager --invalidate
 ```
-
-**E2E Test validates:**
-1. Transcript acquisition (YouTube API with Whisper fallback)
-2. ✓ Transcript persistence to MongoDB (NEW)
-3. Agent 1: Transcript Intelligence
-4. Video download (with cookies)
-5. Frame extraction (FFmpeg)
-6. Agent 2: Frame Intelligence (Vision)
-7. Agent 3: Synthesis
-8. Result structure validation
-9. MongoDB save (if configured)
-
-
-
-## MongoDB Collections
-
-When `PIPELINE_SAVE_TO_DB=true`, the pipeline stores data in two collections:
-
-### 1. `video_analyses` Collection
-Structured analysis results from the 3-agent pipeline.
-
-**Key Fields:**
-- `video_id` - Unique video identifier (indexed)
-- `content_type` - Classification (bitcoin_analysis, altcoin_analysis, etc.)
-- `primary_asset` - Main asset discussed (BTC, ETH, etc.)
-- `transcript_intelligence` - Agent 1 output (signals, price levels)
-- `frame_intelligence` - Agent 2 output (visual analysis)
-- `synthesis` - Agent 3 output (executive summary)
-- `analyzed_at` - Timestamp (indexed)
-
-### 2. `transcripts` Collection (NEW)
-Full raw transcripts with timestamps for each segment.
-
-**Key Fields:**
-- `video_id` - Unique video identifier (indexed, unique)
-- `source_type` - youtube, url, or local
-- `transcript_source` - youtube_api or whisper
-- `segment_count` - Number of transcript segments
-- `duration_seconds` - Total video duration
-- `total_text_length` - Character count of full text
-- `segments` - Array of timestamped text segments:
-  ```json
-  {
-    "text": "Bitcoin bounced from $60,000...",
-    "start": 0.0,
-    "duration": 4.32
-  }
-  ```
-- `created_at` - When transcript was saved (indexed)
-- `language` - Transcript language (indexed)
-
-**Usage:**
-```python
-# Retrieve full transcript
-transcript = await db.get_transcript("KgSEzvGOBio")
-
-# Access segments
-for segment in transcript["segments"]:
-    print(f"[{segment['start']:.1f}s] {segment['text']}")
-```
-
-
-
-## Performance
-
-### Typical Processing Times
-
-| Step | Time | Notes |
-|------|------|-------|
-| Transcript acquisition (YouTube API) | 2-5s | Fast path |
-| Transcript acquisition (Whisper fallback) | 30-120s | Download + transcribe |
-| Agent 1 (Transcript) | 60-120s | Depends on length |
-| Video download | 30-60s | With cookies |
-| Frame extraction | 5-10s | FFmpeg |
-| Agent 2 (Frames) | 30-60s | Batch analysis |
-| Agent 3 (Synthesis) | 10-20s | Final combine |
-| LLM Schema Repair | +2-4s | Only when needed |
-| **Total** | **2-5 min** | Typical YouTube video |
-
-## Documentation
-
-### Implementation Details
-- `REFACTORING_SUMMARY.md` - Summary of recent codebase refactoring
-- `CODEBASE_AUDIT_REPORT.md` - Full codebase audit and recommendations
-
-### Agent Laboratory
-- `agent_laboratory/TEST_REPORT.md` - E2E test results
-- `agent_laboratory/IMPLEMENTATION_SUMMARY.md` - JSON repair & normalization
-- `agent_laboratory/COOKIE_MANAGER_SUMMARY.md` - Auto cookie extraction
-- `agent_laboratory/LLM_REPAIR_SUMMARY.md` - LLM schema repair agent
-- `agent_laboratory/YOUTUBE_DOWNLOAD_SOLUTIONS.md` - YouTube download troubleshooting
 
 ## License
 

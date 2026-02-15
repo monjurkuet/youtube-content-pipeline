@@ -1,16 +1,15 @@
-"""Video download and frame extraction utilities."""
+"""Audio download utilities for transcription pipeline."""
 
 import subprocess
 from pathlib import Path
 
 from src.core.config import get_settings
 from src.core.exceptions import VideoDownloadError
-from src.core.schemas import FrameExtractionPlan
 from src.video.cookie_manager import get_cookie_manager
 
 
-class VideoHandler:
-    """Handle video download and frame extraction."""
+class AudioHandler:
+    """Handle audio download for transcription."""
 
     def __init__(
         self,
@@ -22,8 +21,8 @@ class VideoHandler:
         self.settings = get_settings()
         self.work_dir = work_dir or self.settings.work_dir
         self.work_dir.mkdir(parents=True, exist_ok=True)
-        self._video_cache_dir = self.work_dir / ".video_cache"
-        self._video_cache_dir.mkdir(exist_ok=True)
+        self._audio_cache_dir = self.work_dir / ".audio_cache"
+        self._audio_cache_dir.mkdir(exist_ok=True)
         self.use_browser_cookies = use_browser_cookies
         self._js_runtime = self._detect_js_runtime()
 
@@ -51,46 +50,46 @@ class VideoHandler:
 
         return None
 
-    def _get_video_cache_path(self, source: str, source_type: str) -> Path:
-        """Get path for cached video file."""
+    def _get_audio_cache_path(self, source: str, source_type: str) -> Path:
+        """Get path for cached audio file."""
         # For YouTube, use video ID; for URLs, hash the URL; for local, use original path
         if source_type == "youtube":
-            return self._video_cache_dir / f"youtube_{source}.mp4"
+            return self._audio_cache_dir / f"youtube_{source}.{self.settings.audio_format}"
         elif source_type == "url":
             import hashlib
 
             url_hash = hashlib.md5(source.encode()).hexdigest()[:12]
-            return self._video_cache_dir / f"url_{url_hash}.mp4"
+            return self._audio_cache_dir / f"url_{url_hash}.{self.settings.audio_format}"
         else:  # local
             # For local files, we can't really cache them but we can store a reference
             return Path(source)
 
-    def download_video(self, source: str, source_type: str) -> Path:
+    def download_audio(self, source: str, source_type: str) -> Path:
         """
-        Download video from source.
+        Download audio from source.
 
         Args:
             source: URL or path
             source_type: "youtube", "url", or "local"
 
         Returns:
-            Path to downloaded video
+            Path to downloaded audio file
         """
         if source_type == "local":
             return Path(source)
 
         if source_type == "youtube":
-            return self._download_youtube_video(source)
+            return self._download_youtube_audio(source)
 
-        return self._download_url_video(source)
+        return self._download_url_audio(source)
 
-    def _download_youtube_video(self, video_id: str) -> Path:
-        """Download YouTube video with automatic cookie management."""
-        output_path = self._get_video_cache_path(video_id, "youtube")
+    def _download_youtube_audio(self, video_id: str) -> Path:
+        """Download YouTube audio with automatic cookie management."""
+        output_path = self._get_audio_cache_path(video_id, "youtube")
 
         # Check cache
         if output_path.exists():
-            print(f"Using cached video: {output_path}")
+            print(f"Using cached audio: {output_path}")
             return output_path
 
         url = f"https://www.youtube.com/watch?v={video_id}"
@@ -99,12 +98,19 @@ class VideoHandler:
         cmd = [
             "yt-dlp",
             "-f",
-            self.settings.video_format,
+            "bestaudio/best",
+            "--extract-audio",
+            "--audio-format",
+            self.settings.audio_format,
+            "--audio-quality",
+            self.settings.audio_bitrate,
             "-o",
             str(output_path),
             "--no-playlist",
             "--quiet",
             "--no-warnings",
+            "--js-runtimes",
+            "node",
         ]
 
         # Add JS runtime if available (required for challenge solving)
@@ -131,28 +137,31 @@ class VideoHandler:
                 print(f"Using browser cookies: {browser}")
 
         # Add user agent to appear more like a real browser
-        cmd.extend(
-            [
-                "--user-agent",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            ]
+        user_agent = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
         )
+        cmd.extend(["--user-agent", user_agent])
 
         cmd.append(url)
 
         try:
-            print("Downloading video from YouTube...")
-            result = subprocess.run(cmd, check=True, timeout=300, capture_output=True, text=True)
+            print("Downloading audio from YouTube...")
+            subprocess.run(cmd, check=True, timeout=300, capture_output=True, text=True)
 
-            if output_path.exists():
-                size_mb = output_path.stat().st_size / (1024 * 1024)
-                print(f"Downloaded: {size_mb:.1f} MB")
-                return output_path
-            else:
-                raise VideoDownloadError("Download completed but file not found")
+            # Find the downloaded file (may have different extension)
+            for ext in [f".{self.settings.audio_format}", ".m4a", ".mp3", ".wav"]:
+                candidate = output_path.with_suffix(ext)
+                if candidate.exists():
+                    size_mb = candidate.stat().st_size / (1024 * 1024)
+                    print(f"Downloaded: {size_mb:.1f} MB")
+                    return candidate
 
-        except subprocess.TimeoutExpired:
-            raise VideoDownloadError("Download timeout (5 minutes)")
+            raise VideoDownloadError("Download completed but file not found")
+
+        except subprocess.TimeoutExpired as e:
+            raise VideoDownloadError("Download timeout (5 minutes)") from e
         except subprocess.CalledProcessError as e:
             error_msg = e.stderr if e.stderr else str(e)
             if "403" in error_msg:
@@ -165,9 +174,9 @@ class VideoHandler:
                     "Try:\n"
                     "  - Logging into YouTube in Chrome\n"
                     "  - Manually running: uv run python -m src.video.cookie_manager\n"
-                    "  - Using a local video file instead"
-                )
-            raise VideoDownloadError(f"Download failed: {error_msg}")
+                    "  - Using a local audio file instead"
+                ) from e
+            raise VideoDownloadError(f"Download failed: {error_msg}") from e
 
     def _detect_available_browser(self) -> str | None:
         """Detect Chrome/Chromium for fallback cookie extraction."""
@@ -189,19 +198,24 @@ class VideoHandler:
 
         return None
 
-    def _download_url_video(self, url: str) -> Path:
-        """Download video from direct URL."""
-        output_path = self._get_video_cache_path(url, "url")
+    def _download_url_audio(self, url: str) -> Path:
+        """Download audio from direct URL."""
+        output_path = self._get_audio_cache_path(url, "url")
 
         # Check cache
         if output_path.exists():
-            print(f"Using cached video: {output_path}")
+            print(f"Using cached audio: {output_path}")
             return output_path
 
         cmd = [
             "yt-dlp",
             "-f",
-            self.settings.video_format,
+            "bestaudio",
+            "--extract-audio",
+            "--audio-format",
+            self.settings.audio_format,
+            "--audio-quality",
+            self.settings.audio_bitrate,
             "-o",
             str(output_path),
             "--no-playlist",
@@ -211,112 +225,23 @@ class VideoHandler:
         ]
 
         try:
-            print("Downloading video from URL...")
+            print("Downloading audio from URL...")
             subprocess.run(cmd, check=True, timeout=600, capture_output=True)
 
-            if output_path.exists():
-                size_mb = output_path.stat().st_size / (1024 * 1024)
-                print(f"Downloaded: {size_mb:.1f} MB")
-                return output_path
-            else:
-                raise VideoDownloadError("Download completed but file not found")
-        except subprocess.TimeoutExpired:
-            raise VideoDownloadError("Download timeout")
+            # Find the downloaded file
+            for ext in [f".{self.settings.audio_format}", ".m4a", ".mp3", ".wav"]:
+                candidate = output_path.with_suffix(ext)
+                if candidate.exists():
+                    size_mb = candidate.stat().st_size / (1024 * 1024)
+                    print(f"Downloaded: {size_mb:.1f} MB")
+                    return candidate
+
+            raise VideoDownloadError("Download completed but file not found")
+        except subprocess.TimeoutExpired as e:
+            raise VideoDownloadError("Download timeout") from e
         except subprocess.CalledProcessError as e:
-            raise VideoDownloadError(f"Download failed: {e}")
+            raise VideoDownloadError(f"Download failed: {e}") from e
 
-    def extract_frames(
-        self,
-        video_path: Path,
-        extraction_plan: FrameExtractionPlan,
-    ) -> list[Path]:
-        """
-        Extract frames based on LLM's extraction plan.
 
-        Args:
-            video_path: Path to video file
-            extraction_plan: LLM-generated extraction plan
-
-        Returns:
-            List of frame file paths
-        """
-        frames_dir = self.work_dir / "frames"
-        frames_dir.mkdir(exist_ok=True)
-
-        # Clean old frames
-        for f in frames_dir.glob("*.jpg"):
-            f.unlink()
-
-        # Collect timestamps
-        timestamps = []
-
-        # Add LLM-suggested key moments
-        for moment in extraction_plan.key_moments:
-            timestamps.append(moment.time)
-
-        # Add regular coverage intervals
-        duration = self._get_video_duration(video_path)
-        interval = extraction_plan.coverage_interval_seconds
-        for t in range(0, int(duration), interval):
-            timestamps.append(t)
-
-        # Remove duplicates and sort
-        timestamps = sorted(set(timestamps))
-
-        # Limit to max frames
-        max_frames = self.settings.max_frames_to_extract
-        if len(timestamps) > max_frames:
-            # Sample evenly
-            step = len(timestamps) / max_frames
-            timestamps = [timestamps[int(i * step)] for i in range(max_frames)]
-
-        print(f"Extracting {len(timestamps)} frames...")
-
-        # Extract frames
-        frames = []
-        for i, ts in enumerate(timestamps, 1):
-            output_file = frames_dir / f"frame_{i:04d}_at_{int(ts):04d}s.jpg"
-
-            cmd = [
-                "ffmpeg",
-                "-ss",
-                str(ts),
-                "-i",
-                str(video_path),
-                "-vframes",
-                "1",
-                "-q:v",
-                str(self.settings.video_frame_quality),
-                "-y",
-                str(output_file),
-            ]
-
-            try:
-                subprocess.run(cmd, capture_output=True, timeout=30)
-                if output_file.exists():
-                    frames.append(output_file)
-            except subprocess.TimeoutExpired:
-                print(f"  Frame {i} timeout, skipping")
-                continue
-
-        print(f"Extracted {len(frames)} frames")
-        return frames
-
-    def _get_video_duration(self, video_path: Path) -> float:
-        """Get video duration in seconds using ffprobe."""
-        cmd = [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            str(video_path),
-        ]
-
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            return float(result.stdout.strip())
-        except Exception:
-            return 0.0
+# Backwards compatibility alias
+VideoHandler = AudioHandler

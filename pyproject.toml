@@ -1,7 +1,7 @@
 [project]
 name = "youtube-content-pipeline"
-version = "0.1.0"
-description = "YouTube content extraction pipeline with multiple fallback strategies"
+version = "0.4.0"
+description = "YouTube content extraction pipeline with transcription and MongoDB storage"
 requires-python = ">=3.12"
 dependencies = [
     "requests>=2.31.0",
@@ -10,12 +10,10 @@ dependencies = [
     "pydantic-settings>=2.1.0",
     "motor>=3.3.0",
     "pymongo>=4.6.0",
-    "openai>=1.0.0",
     "typer>=0.9.0",
     "rich>=13.7.0",
     "aiohttp>=3.9.0",
     "yt-dlp>=2023.12.30",
-    "pillow>=10.1.0",
     "whisper>=1.1.10",
     "numpy>=2.0.0,<2.1.0",
     "torch>=2.10.0",
@@ -29,7 +27,9 @@ dependencies = [
     "onnx>=1.15.0",
     "onnxruntime>=1.15.0",
     "setuptools<70",
-    "google-genai>=1.62.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "python-multipart>=0.0.20",
 ]
 
 [project.optional-dependencies]
@@ -47,6 +47,9 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
+ignore = [
+    "B008",  # Function call in argument defaults (required for FastAPI/Typer DI)
+]
 
 [tool.mypy]
 python_version = "3.12"

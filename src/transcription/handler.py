@@ -108,7 +108,7 @@ class TranscriptionHandler:
         cmd = [
             "yt-dlp",
             "-f",
-            "bestaudio[ext=m4a]/bestaudio",
+            "bestaudio/best",
             "--extract-audio",
             "--audio-format",
             self.settings.audio_format,
@@ -119,6 +119,8 @@ class TranscriptionHandler:
             "--no-playlist",
             "--quiet",
             "--no-warnings",
+            "--js-runtimes",
+            "node",
         ]
 
         # Add cookies from browser
@@ -132,20 +134,26 @@ class TranscriptionHandler:
         cmd.append(url)
 
         try:
-            subprocess.run(cmd, check=True, timeout=300, capture_output=True)
+            subprocess.run(cmd, check=True, timeout=300, capture_output=True, text=True)
 
             # Find the downloaded file (may have different extension)
-            for ext in [".mp3", ".m4a", ".wav"]:
+            for ext in [".mp3", ".m4a", ".wav", ".opus", ".webm"]:
                 candidate = output_path.with_suffix(ext)
                 if candidate.exists():
                     return candidate
 
+            # Check for any audio file in work_dir
+            for f in self.work_dir.glob(f"{video_id}_audio.*"):
+                if f.suffix in [".mp3", ".m4a", ".wav", ".opus", ".webm"]:
+                    return f
+
             raise WhisperError("Audio download completed but file not found")
 
-        except subprocess.TimeoutExpired:
-            raise WhisperError("Audio download timeout")
+        except subprocess.TimeoutExpired as e:
+            raise WhisperError("Audio download timeout") from e
         except subprocess.CalledProcessError as e:
-            raise WhisperError(f"Audio download failed: {e}")
+            error_detail = e.stderr if e.stderr else str(e)
+            raise WhisperError(f"Audio download failed: {error_detail}") from e
 
     def _transcribe_with_whisper(self, audio_path: str) -> RawTranscript:
         """Transcribe audio file using OpenVINO Whisper."""

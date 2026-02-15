@@ -1,5 +1,6 @@
 """Cookie management for YouTube video downloads with auto-extraction and caching."""
 
+import contextlib
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -187,10 +188,8 @@ class YouTubeCookieManager:
 
     def _save_metadata(self, metadata: dict):
         """Save cookie metadata."""
-        try:
+        with contextlib.suppress(Exception):
             self.metadata_file.write_text(json.dumps(metadata, indent=2))
-        except Exception:
-            pass
 
     def get_cookie_args(self) -> list:
         """
