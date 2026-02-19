@@ -147,7 +147,32 @@ class OpenVINOWhisperTranscriber:
 
         Returns:
             Dictionary with transcription text and metadata
+
+        Raises:
+            RuntimeError: If transcription fails due to OpenVINO issues
         """
+        try:
+            return self._transcribe_impl(audio_path, language, chunk_length)
+        except (RuntimeError, OSError, MemoryError) as e:
+            error_msg = str(e)
+            if "longjmp" in error_msg.lower() or "memory" in error_msg.lower():
+                raise RuntimeError(
+                    f"OpenVINO transcription failed due to library crash. "
+                    f"This is typically caused by: "
+                    f"(1) Insufficient memory, (2) OpenVINO library bug, or "
+                    f"(3) Incompatible hardware. Try using CPU device or "
+                    f"installing the standard transformers package: "
+                    f"pip install transformers torch"
+                ) from e
+            raise
+
+    def _transcribe_impl(
+        self,
+        audio_path: str,
+        language: str = "en",
+        chunk_length: int = 30,
+    ) -> dict[str, Any]:
+        """Internal transcription implementation."""
         self._load_model()
 
         if self.model is None or self.processor is None:
@@ -243,7 +268,7 @@ class OpenVINOWhisperTranscriber:
                 self._load_model()
 
                 # Retry transcription
-                return self.transcribe(audio_path, language, chunk_length)
+                return self._transcribe_impl(audio_path, language, chunk_length)
 
             raise RuntimeError(f"Transcription failed: {e}") from e
 
