@@ -80,17 +80,10 @@ Create a `.env` file:
 MONGODB_URL=mongodb://localhost:27017
 MONGODB_DATABASE=video_pipeline
 
-# Audio Processing
-AUDIO_FORMAT=mp3
-AUDIO_BITRATE=128k
-
-# Whisper (OpenVINO)
+# OpenVINO Whisper
 OPENVINO_WHISPER_MODEL=openai/whisper-base
-OPENVINO_DEVICE=AUTO                   # AUTO, GPU, or CPU
-
-# Pipeline
-PIPELINE_WORK_DIR=/tmp/transcription_pipeline
-PIPELINE_SAVE_TO_DB=true
+OPENVINO_DEVICE=AUTO  # AUTO, GPU, or CPU
+OPENVINO_CACHE_DIR=~/.cache/whisper_openvino
 ```
 
 ## Architecture
@@ -114,24 +107,24 @@ src/
 ├── cli.py                      # CLI interface
 ├── database.py                 # MongoDB integration
 ├── api/
-│   ├── main.py                 # FastAPI app
+│   ├── main.py                # FastAPI app
+│   ├── dependencies.py        # FastAPI dependencies
 │   ├── routers/
-│   │   ├── videos.py           # Transcription endpoints
-│   │   └── transcripts.py      # Transcript retrieval
+│   │   ├── videos.py          # Transcription endpoints
+│   │   └── transcripts.py    # Transcript retrieval
 │   └── models/
-│       └── requests.py         # Pydantic models
+│       └── requests.py        # Pydantic models
 ├── core/
-│   ├── config.py               # Configuration settings
-│   ├── exceptions.py           # Custom exceptions
-│   └── schemas.py              # Pydantic models
+│   ├── config.py              # Configuration settings
+│   ├── exceptions.py          # Custom exceptions
+│   └── schemas.py             # Pydantic models
 ├── pipeline/
-│   └── transcript.py           # Main pipeline
+│   └── transcript.py         # Main pipeline
 ├── transcription/
-│   ├── handler.py              # Transcription with fallback
-│   └── whisper_openvino.py     # OpenVINO Whisper
+│   ├── handler.py            # Transcription with fallback
+│   └── whisper_openvino.py   # OpenVINO Whisper
 └── video/
-    ├── cookie_manager.py       # Browser cookie management
-    └── handler.py              # Audio download
+    └── cookie_manager.py     # Browser cookie management
 ```
 
 ## Programmatic API
@@ -181,6 +174,16 @@ uv run python -m src.video.cookie_manager --status
 
 # Force re-extraction
 uv run python -m src.video.cookie_manager --invalidate
+```
+
+## Running Tests
+
+```bash
+# Run all tests
+uv run pytest tests/ -v
+
+# Run specific test file
+uv run pytest tests/test_pipeline.py -v
 ```
 
 ## License

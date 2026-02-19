@@ -32,18 +32,18 @@ async def get_transcript(
     Raises:
         HTTPException: If transcript not found
     """
-    from src.database import get_db_manager
+    doc = await db.transcripts.find_one({"video_id": video_id})
 
-    db_manager = get_db_manager()
-    transcript = await db_manager.get_transcript(video_id)
-
-    if transcript is None:
+    if doc is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Transcript for video {video_id} not found",
         )
 
-    return transcript
+    if "_id" in doc:
+        doc["_id"] = str(doc["_id"])
+
+    return doc
 
 
 @router.get(
@@ -67,7 +67,6 @@ async def list_transcripts(
     Returns:
         List of transcript documents
     """
-    # Query the transcripts collection directly
     cursor = db.transcripts.find().sort("created_at", -1).skip(offset).limit(limit)
 
     results = []

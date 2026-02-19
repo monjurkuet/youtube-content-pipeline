@@ -1,5 +1,8 @@
 """Video processing module."""
 
-from src.video.handler import VideoHandler
+from src.video.cookie_manager import YouTubeCookieManager, get_cookie_manager
 
-__all__ = ["VideoHandler"]
+__all__ = [
+    "YouTubeCookieManager",
+    "get_cookie_manager",
+]

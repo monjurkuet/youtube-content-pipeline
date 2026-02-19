@@ -204,7 +204,9 @@ class OpenVINOWhisperTranscriber:
 
                 # Generate
                 with torch.no_grad():
-                    predicted_ids = self.model.generate(inputs, max_new_tokens=400)
+                    predicted_ids = self.model.generate(  # type: ignore[attr-defined]
+                        inputs, max_new_tokens=400
+                    )
 
                 # Decode
                 transcription = self.processor.batch_decode(

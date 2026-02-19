@@ -3,11 +3,17 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict  # type: ignore[attr-defined]
 
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
+
+    model_config = SettingsConfigDict(  # type: ignore[assignment]
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",  # Allow extra env vars not defined in model
+    )
 
     # MongoDB
     mongodb_url: str = "mongodb://localhost:27017"
@@ -28,11 +34,6 @@ class Settings(BaseSettings):
     pipeline_cache_dir: str = "/tmp/transcription_cache"
     pipeline_enable_cache: bool = True
     pipeline_save_to_db: bool = True
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        extra = "ignore"  # Allow extra env vars not defined in model
 
     # Convenience properties
     @property
