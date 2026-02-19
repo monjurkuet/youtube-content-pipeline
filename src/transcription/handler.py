@@ -206,11 +206,12 @@ def identify_source_type(source: str) -> tuple[str, str]:
         if match:
             return ("youtube", match.group(1))
 
-    # Local file
-    if Path(source).exists():
-        return ("local", str(Path(source).resolve()))
+    # Local file - check this BEFORE URL parsing to avoid issues
+    source_path = Path(source)
+    if source_path.exists() and source_path.is_file():
+        return ("local", str(source_path.resolve()))
 
-    # URL
+    # URL - check if it's a valid HTTP(S) URL
     from urllib.parse import urlparse
 
     parsed = urlparse(source)
