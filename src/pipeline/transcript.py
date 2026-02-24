@@ -138,9 +138,10 @@ class TranscriptPipeline:
         """Save transcript to MongoDB.
 
         Runs async database operations in sync context.
-        Uses new_event_loop() for thread-safety when called from ThreadPoolExecutor.
+        Uses a separate thread with its own event loop to avoid conflicts.
         """
         import asyncio
+        import concurrent.futures
 
         async def _save() -> str:
             from src.database import MongoDBManager
@@ -153,16 +154,17 @@ class TranscriptPipeline:
             finally:
                 db.client.close()
 
+        def _run_in_thread() -> str:
+            # Each thread gets its own event loop with asyncio.run()
+            return asyncio.run(_save())
+
         try:
-            # Use new_event_loop() instead of asyncio.run() for thread safety
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                doc_id = loop.run_until_complete(_save())
+            # Run async DB operation in a separate thread to avoid event loop conflicts
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_run_in_thread)
+                doc_id = future.result()
                 console.print(f"   [green]✓ Database: Saved with ID {doc_id[:16]}...[/green]")
                 return doc_id
-            finally:
-                loop.close()
         except Exception as e:
             console.print(f"   [red]✗ Database: Save failed: {e}[/red]")
             raise
