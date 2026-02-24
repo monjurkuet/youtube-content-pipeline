@@ -5,14 +5,6 @@
 - You are allowed to read, modify and write .env files.
 - CORS allows all origins.
 
-# Environment Variables
-
-## MongoDB
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `MONGODB_URL` | MongoDB connection URI | `mongodb://localhost:27017` |
-| `MONGODB_DATABASE` | Database name | `video_pipeline` |
-
 ## OpenVINO Whisper
 | Variable | Description | Default |
 |----------|-------------|---------|
