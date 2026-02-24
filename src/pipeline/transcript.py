@@ -159,11 +159,12 @@ class TranscriptPipeline:
             asyncio.set_event_loop(loop)
             try:
                 doc_id = loop.run_until_complete(_save())
+                console.print(f"   [green]✓ Database: Saved with ID {doc_id[:16]}...[/green]")
                 return doc_id
             finally:
                 loop.close()
         except Exception as e:
-            console.print(f"   [yellow]Database: Save failed: {e}[/yellow]")
+            console.print(f"   [red]✗ Database: Save failed: {e}[/red]")
             raise
 
 

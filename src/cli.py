@@ -573,15 +573,13 @@ def channel_transcribe_pending(
                     continue
 
                 try:
-                    # Transcribe video in thread pool to avoid event loop conflicts
+                    # Transcribe video synchronously (OpenVINO is not thread-safe)
                     rprint(f"  [dim]Starting transcription...[/dim]")
                     video_url = f"https://www.youtube.com/watch?v={video.video_id}"
 
-                    loop = asyncio.get_event_loop()
-                    with concurrent.futures.ThreadPoolExecutor() as executor:
-                        result = await loop.run_in_executor(
-                            executor, lambda: get_transcript(video_url, save_to_db=True)
-                        )
+                    # Run transcription synchronously - OpenVINO Whisper crashes in threads
+                    # due to longjmp/setjmp stack frame issues
+                    result = get_transcript(video_url, save_to_db=True)
 
                     # Get transcript ID and mark as completed (fresh DB manager)
                     # Add retry logic in case DB write hasn't completed yet

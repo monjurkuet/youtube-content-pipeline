@@ -323,8 +323,16 @@ class TranscriptionHandler:
             for seg in result.get("segments", [])
         ]
 
+        # Extract video_id from audio path (remove _audio suffix)
+        audio_filename = Path(audio_path).stem
+        video_id = (
+            audio_filename.replace("_audio", "")
+            if audio_filename.endswith("_audio")
+            else audio_filename
+        )
+
         return RawTranscript(
-            video_id=Path(audio_path).stem,
+            video_id=video_id,
             segments=segments,
             source="whisper",
             language=result.get("language", "en"),
