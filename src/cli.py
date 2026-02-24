@@ -509,7 +509,10 @@ def channel_transcribe_pending(
             rprint(
                 f"[yellow]⚠ Processing ALL {len(pending)} pending videos (this may take a while)[/yellow]"
             )
-            rprint(f"[dim]Tip: Use --batch-size 10 for safer batch processing[/dim]\n")
+            if batch_size < len(pending):
+                rprint(f"[dim]Processing in batches of {batch_size}[/dim]\n")
+            else:
+                rprint(f"[dim]Processing all at once[/dim]\n")
         else:
             num_to_process = min(batch_size, len(pending))
             rprint(f"[dim]Processing {num_to_process} video(s) (use --all to process all)[/dim]\n")

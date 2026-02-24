@@ -2,6 +2,15 @@
 
 ## 🚀 Quick Start: Complete Workflow
 
+### **Transcribe All Videos - Command Options**
+
+| Command | Description | Best For |
+|---------|-------------|----------|
+| `transcribe-pending @Channel` | 5 videos (default) | Quick tests |
+| `transcribe-pending @Channel --batch-size 20` | 20 videos | Daily catch-up |
+| `transcribe-pending @Channel --all` | ALL videos | Small channels (<50 videos) |
+| `transcribe-pending @Channel --all --batch-size 20` | ALL in batches of 20 | **Large channels** ✓ |
+
 ### **Transcribe All Videos from a Channel**
 
 ```bash
@@ -13,12 +22,14 @@ uv run python -m src.cli channel sync @ChartChampions --all --max-videos 500
 
 # Step 3: Transcribe all pending videos
 
-# Option A: Process in batches (recommended for large channels)
+# Option A: Process in batches (recommended, run repeatedly)
 uv run python -m src.cli channel transcribe-pending @ChartChampions --batch-size 10
-# Run repeatedly until all videos are transcribed
 
 # Option B: Transcribe ALL at once (may take hours for large channels)
 uv run python -m src.cli channel transcribe-pending @ChartChampions --all
+
+# Option C: Transcribe ALL in custom batch sizes (BEST for large channels)
+uv run python -m src.cli channel transcribe-pending @ChartChampions --all --batch-size 20
 
 # Check progress:
 uv run python -m src.cli channel videos @ChartChampions --status pending
@@ -143,8 +154,14 @@ uv run python -m src.cli channel sync @ChartChampions --all --max-videos 2000
 uv run python -m src.cli channel sync @ChartChampions
 uv run python -m src.cli channel sync @ECKrown
 
-# Transcribe new videos
-uv run python -m src.cli channel transcribe-pending @ChartChampions --batch-size 5
+# Transcribe new videos (batch of 5, default)
+uv run python -m src.cli channel transcribe-pending @ChartChampions
+
+# Transcribe in custom batch size (e.g., 20 at a time)
+uv run python -m src.cli channel transcribe-pending @ChartChampions --batch-size 20
+
+# Or transcribe ALL pending at once (may take hours)
+uv run python -m src.cli channel transcribe-pending @ChartChampions --all
 ```
 
 ### **Weekly (or after being away):**
