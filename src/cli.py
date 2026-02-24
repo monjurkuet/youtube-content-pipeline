@@ -404,7 +404,78 @@ def channel_transcribe_pending(
     """Transcribe pending videos from channel."""
     from src.channel import resolve_channel_handle, get_pending_videos, mark_video_transcribed
     from src.pipeline import get_transcript
+    from src.database import get_db_manager
     import asyncio
+    import subprocess
+    import json
+
+    def check_video_availability(video_id: str) -> tuple[bool, str]:
+        """
+        Check if video is available for transcription using yt-dlp.
+
+        Note: In --simulate mode, 'url' field is None even for playable videos.
+        We check for errors and basic metadata instead.
+
+        Returns:
+            Tuple of (is_available, reason)
+        """
+        try:
+            cmd = [
+                "yt-dlp",
+                "--simulate",
+                "--dump-json",
+                "--no-warnings",
+                "--quiet",
+                f"https://www.youtube.com/watch?v={video_id}",
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+
+            # Check stderr for errors (yt-dlp reports errors there)
+            if result.returncode != 0:
+                error_msg = result.stderr.strip().lower()
+                if "live event" in error_msg or "upcoming" in error_msg:
+                    return False, "Live stream (upcoming)"
+                elif "private" in error_msg:
+                    return False, "Video is private"
+                elif "unavailable" in error_msg or "not available" in error_msg:
+                    return False, "Video unavailable"
+                elif "members-only" in error_msg or "join" in error_msg:
+                    return False, "Members-only video"
+                elif "age" in error_msg and "restricted" in error_msg:
+                    return False, "Age-restricted"
+                else:
+                    return False, f"Video error: {result.stderr.strip()[:50]}"
+
+            if not result.stdout.strip():
+                return False, "No video metadata"
+
+            data = json.loads(result.stdout.strip())
+
+            # Check for live stream indicators
+            live_status = data.get("live_status")
+            if live_status in ["is_live", "is_upcoming", "post_live"]:
+                return False, f"Live stream ({live_status})"
+
+            # Check availability field
+            availability = data.get("availability")
+            if availability in ["private", "unavailable"]:
+                return False, f"Video {availability}"
+
+            # Check for basic metadata (if we have title and upload_date, it's likely playable)
+            if not data.get("title"):
+                return False, "Missing video title"
+
+            # Note: 'url' is None in --simulate mode even for playable videos
+            # We only check for explicit error conditions above
+
+            return True, "Available"
+
+        except subprocess.TimeoutExpired:
+            return False, "Timeout checking video"
+        except json.JSONDecodeError:
+            return False, "Invalid video metadata"
+        except Exception as e:
+            return False, f"Check failed: {str(e)[:50]}"
 
     try:
         channel_id = None
@@ -429,54 +500,83 @@ def channel_transcribe_pending(
 
         successes = 0
         failures = 0
+        skipped = 0
 
-        for i, video in enumerate(pending[:batch_size], 1):
-            rprint(f"[dim]{i}/{min(batch_size, len(pending))}[/dim] {video.title[:50]}...")
+        # Use single event loop
+        # Create fresh DB manager for each operation to avoid Motor event loop issues
+        import concurrent.futures
+        from src.database import MongoDBManager
 
-            try:
-                # Transcribe video
-                video_url = f"https://www.youtube.com/watch?v={video.video_id}"
-                result = get_transcript(video_url, save_to_db=True)
+        async def process_all():
+            nonlocal successes, failures, skipped
 
-                # Mark as completed
-                from src.database import get_db_manager
+            for i, video in enumerate(pending[:batch_size], 1):
+                rprint(f"[dim]{i}/{min(batch_size, len(pending))}[/dim] {video.title[:50]}...")
 
-                db = get_db_manager()
+                # Check video availability first
+                rprint(f"  [dim]Checking availability...[/dim]")
+                is_available, reason = check_video_availability(video.video_id)
 
-                async def _mark():
-                    # Get transcript ID
-                    transcript = await db.get_transcript(video.video_id)
-                    if transcript:
-                        await db.mark_transcript_completed(video.video_id, transcript["_id"])
-                        return True
-                    return False
+                if not is_available:
+                    rprint(f"  [yellow]⊘ Skipped: {reason}[/yellow]")
+                    skipped += 1
 
-                marked = asyncio.run(_mark())
+                    # Mark as failed with reason (fresh DB manager)
+                    db = MongoDBManager()
+                    try:
+                        await db.mark_transcript_failed(video.video_id, reason)
+                    finally:
+                        db.client.close()
+                    continue
 
-                if marked:
-                    rprint(f"  [green]✓ Transcribed and marked complete[/green]")
-                    successes += 1
-                else:
-                    rprint(f"  [yellow]⚠ Transcribed but failed to mark complete[/yellow]")
-                    successes += 1
+                try:
+                    # Transcribe video in thread pool to avoid event loop conflicts
+                    rprint(f"  [dim]Starting transcription...[/dim]")
+                    video_url = f"https://www.youtube.com/watch?v={video.video_id}"
 
-            except Exception as e:
-                rprint(f"  [red]✗ Error: {escape(str(e)[:50])}[/red]")
-                failures += 1
+                    loop = asyncio.get_event_loop()
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        result = await loop.run_in_executor(
+                            executor, lambda: get_transcript(video_url, save_to_db=True)
+                        )
 
-                # Mark as failed
-                from src.database import get_db_manager
+                    # Get transcript ID and mark as completed (fresh DB manager)
+                    db = MongoDBManager()
+                    try:
+                        transcript = await db.get_transcript(video.video_id)
+                        if transcript:
+                            await db.mark_transcript_completed(video.video_id, transcript["_id"])
+                            rprint(f"  [green]✓ Transcribed and marked complete[/green]")
+                            successes += 1
+                        else:
+                            rprint(
+                                f"  [yellow]⚠ Transcribed but transcript not found in DB[/yellow]"
+                            )
+                            successes += 1
+                    finally:
+                        db.client.close()
 
-                db = get_db_manager()
+                except Exception as e:
+                    error_msg = str(e)[:100]
+                    rprint(f"  [red]✗ Error: {escape(error_msg)}[/red]")
+                    failures += 1
 
-                async def _mark_failed():
-                    await db.mark_transcript_failed(video.video_id, str(e))
+                    # Mark as failed with error message (fresh DB manager)
+                    db = MongoDBManager()
+                    try:
+                        await db.mark_transcript_failed(video.video_id, error_msg)
+                    finally:
+                        db.client.close()
 
-                asyncio.run(_mark_failed())
+        asyncio.run(process_all())
 
+        # Summary
         rprint(f"\n[bold]Transcription Complete[/bold]")
         rprint(f"  [green]Successes: {successes}[/green]")
-        rprint(f"  [red]Failures: {failures}[/red]\n")
+        rprint(f"  [red]Failures: {failures}[/red]")
+        if skipped > 0:
+            rprint(f"  [yellow]Skipped: {skipped}[/yellow]")
+        rprint()
 
     except Exception as e:
         rprint(f"[red]✗ Error: {escape(str(e))}[/red]")

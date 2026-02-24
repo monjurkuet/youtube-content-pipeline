@@ -74,6 +74,40 @@ uv run python -m src.cli channel videos @ChartChampions --limit 20
 uv run python -m src.cli channel transcribe-pending @ChartChampions --batch-size 5
 ```
 
+### Transcribe All Videos from Channels
+
+```bash
+# Step 1: Add and sync channel
+uv run python -m src.cli channel add @ChartChampions
+uv run python -m src.cli channel sync @ChartChampions --all --max-videos 500
+
+# Step 2: Transcribe all pending videos (in batches of 10)
+uv run python -m src.cli channel transcribe-pending @ChartChampions --batch-size 10
+
+# Step 3: Check progress
+uv run python -m src.cli channel videos @ChartChampions --status completed --limit 10
+uv run python -m src.cli channel videos @ChartChampions --status pending --limit 10
+
+# Transcribe ALL channels at once
+uv run python -m src.cli channel transcribe-pending --batch-size 10
+
+# Transcribe from specific channel
+uv run python -m src.cli channel transcribe-pending @ChartChampions --batch-size 10
+```
+
+### Full Workflow: Add Channel → Sync → Transcribe All
+
+```bash
+# Complete workflow for a new channel
+uv run python -m src.cli channel add @ChartChampions          # Add channel
+uv run python -m src.cli channel sync @ChartChampions --all   # Get all videos
+uv run python -m src.cli channel transcribe-pending @ChartChampions --batch-size 10  # Transcribe
+
+# For large channels (1000+ videos), transcribe in multiple batches:
+# Run this command repeatedly until all videos are transcribed
+uv run python -m src.cli channel transcribe-pending @ChartChampions --batch-size 10
+```
+
 ### Batch Transcription
 
 ```bash
