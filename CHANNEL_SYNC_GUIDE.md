@@ -11,10 +11,15 @@ uv run python -m src.cli channel add @ChartChampions
 # Step 2: Sync all videos (get metadata)
 uv run python -m src.cli channel sync @ChartChampions --all --max-videos 500
 
-# Step 3: Transcribe all pending videos (10 at a time)
-uv run python -m src.cli channel transcribe-pending @ChartChampions --batch-size 10
+# Step 3: Transcribe all pending videos
 
-# Step 4: Repeat step 3 until all videos are transcribed
+# Option A: Process in batches (recommended for large channels)
+uv run python -m src.cli channel transcribe-pending @ChartChampions --batch-size 10
+# Run repeatedly until all videos are transcribed
+
+# Option B: Transcribe ALL at once (may take hours for large channels)
+uv run python -m src.cli channel transcribe-pending @ChartChampions --all
+
 # Check progress:
 uv run python -m src.cli channel videos @ChartChampions --status pending
 ```

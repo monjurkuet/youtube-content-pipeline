@@ -70,8 +70,11 @@ uv run python -m src.cli channel list
 # List videos from channel
 uv run python -m src.cli channel videos @ChartChampions --limit 20
 
-# Transcribe pending videos
+# Transcribe pending videos (5 at a time)
 uv run python -m src.cli channel transcribe-pending @ChartChampions --batch-size 5
+
+# Transcribe ALL pending videos at once
+uv run python -m src.cli channel transcribe-pending @ChartChampions --all
 ```
 
 ### Transcribe All Videos from Channels
