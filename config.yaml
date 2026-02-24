@@ -1,0 +1,72 @@
+# YouTube Transcription Pipeline Configuration
+# This file contains runtime configuration for the transcription pipeline.
+# Environment variables take precedence over these settings.
+
+# Rate Limiting Configuration
+# Prevents IP blocking by adding delays between API calls
+rate_limiting:
+  # Enable rate limiting (recommended: true)
+  enabled: true
+  
+  # Random delay range in seconds between video transcriptions
+  # A random delay between min_delay and max_delay will be applied
+  min_delay: 2.0
+  max_delay: 5.0
+  
+  # Delay before retrying after rate limit error (exponential backoff base)
+  retry_delay: 10.0
+  
+  # Maximum number of retries for rate-limited requests
+  max_retries: 3
+
+# YouTube API Configuration
+youtube_api:
+  # Use browser cookies for YouTube Transcript API requests
+  # This makes requests less detectable and helps avoid IP blocking
+  use_cookies: true
+  
+  # Cookie cache duration in hours (re-extract after this time)
+  cookie_cache_hours: 24
+  
+  # Request timeout in seconds
+  timeout: 30
+  
+  # Languages to prefer for transcripts (in order of preference)
+  languages:
+    - en
+    - en-US
+    - en-GB
+
+# Batch Processing Configuration
+# Note: Videos are processed sequentially (one-by-one), not in parallel
+batch:
+  # Default number of videos to process per command run
+  default_size: 5
+  
+  # Enable progress display
+  show_progress: true
+
+# Whisper Transcription Fallback
+whisper:
+  # Audio format for downloaded audio
+  audio_format: mp3
+  
+  # Audio bitrate
+  audio_bitrate: 128k
+  
+  # Chunk length for transcription (seconds)
+  chunk_length: 30
+
+# Pipeline Configuration
+pipeline:
+  # Working directory for temporary files
+  work_dir: /tmp/transcription_pipeline
+  
+  # Cache directory
+  cache_dir: /tmp/transcription_cache
+  
+  # Enable caching
+  enable_cache: true
+  
+  # Save transcripts to database
+  save_to_db: true

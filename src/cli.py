@@ -399,8 +399,11 @@ def channel_transcribe_pending(
     handle: str | None = typer.Argument(
         None, help="Channel handle (optional, transcribe all if not specified)"
     ),
-    batch_size: int = typer.Option(
-        5, "-b", "--batch-size", help="Number of videos to transcribe per batch"
+    batch_size: int | None = typer.Option(
+        None,
+        "-b",
+        "--batch-size",
+        help="Number of videos to transcribe per batch (default: from config.yaml)",
     ),
     all_videos: bool = typer.Option(
         False, "--all", "-a", help="Transcribe ALL pending videos (no limit)"
@@ -408,15 +411,24 @@ def channel_transcribe_pending(
 ):
     """Transcribe pending videos from channel.
 
-    Use --batch-size to process videos in small batches (safer),
-    or use --all to transcribe everything at once.
+    Batch size defaults to config.yaml setting (default: 5).
+    Videos are processed sequentially with rate limiting delays.
+    Use --all to transcribe all pending videos.
     """
     from src.channel import resolve_channel_handle, get_pending_videos, mark_video_transcribed
     from src.pipeline import get_transcript
     from src.database import get_db_manager
+    from src.core.config import get_settings_with_yaml
     import asyncio
     import subprocess
     import json
+
+    # Load settings from config.yaml
+    settings = get_settings_with_yaml()
+
+    # Use CLI batch_size if provided, otherwise use config
+    if batch_size is None:
+        batch_size = settings.batch_default_size
 
     def check_video_availability(video_id: str) -> tuple[bool, str]:
         """
@@ -533,6 +545,16 @@ def channel_transcribe_pending(
 
             for i, video in enumerate(pending[:num_to_process], 1):
                 rprint(f"[dim]{i}/{num_to_process}[/dim] {video.title[:50]}...")
+
+                # Apply rate limiting delay between videos (in addition to handler's internal rate limiting)
+                if i > 1 and settings.rate_limiting_enabled:
+                    import random
+
+                    delay = random.uniform(
+                        settings.rate_limiting_min_delay, settings.rate_limiting_max_delay
+                    )
+                    rprint(f"  [dim]Rate limiting: waiting {delay:.1f}s...[/dim]")
+                    await asyncio.sleep(delay)
 
                 # Check video availability first
                 rprint(f"  [dim]Checking availability...[/dim]")

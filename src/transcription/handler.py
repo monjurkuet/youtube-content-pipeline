@@ -1,21 +1,36 @@
 """Source-agnostic transcription handler with fallback chain."""
 
+import random
 import re
 import subprocess
+import time
 from pathlib import Path
 
-from src.core.config import get_settings
+from rich.console import Console
+
+from src.core.config import get_settings_with_yaml
 from src.core.exceptions import TranscriptError, WhisperError, YouTubeAPIError
 from src.core.schemas import RawTranscript, TranscriptSegment
+from src.video.cookie_manager import get_cookie_manager
+
+console = Console()
 
 
 class TranscriptionHandler:
     """Handle transcript acquisition from any source with fallback chain."""
 
     def __init__(self, work_dir: Path | None = None):
-        self.settings = get_settings()
+        self.settings = get_settings_with_yaml()
         self.work_dir = work_dir or self.settings.work_dir
         self.work_dir.mkdir(parents=True, exist_ok=True)
+
+        # Initialize cookie manager
+        self.cookie_manager = get_cookie_manager(
+            cache_duration_hours=self.settings.youtube_api_cookie_cache_hours
+        )
+
+        # Track last request time for rate limiting
+        self._last_request_time: float | None = None
 
     def get_transcript(self, video_id: str, source_type: str = "youtube") -> RawTranscript:
         """
@@ -56,32 +71,160 @@ class TranscriptionHandler:
         except Exception as e:
             raise TranscriptError(f"All transcription methods failed: {e}") from e
 
+    def _apply_rate_limiting(self):
+        """Apply rate limiting delay before making a request."""
+        if not self.settings.rate_limiting_enabled:
+            return
+
+        if self._last_request_time is not None:
+            # Calculate random delay
+            min_delay = self.settings.rate_limiting_min_delay
+            max_delay = self.settings.rate_limiting_max_delay
+            delay = random.uniform(min_delay, max_delay)
+
+            elapsed = time.time() - self._last_request_time
+            if elapsed < delay:
+                sleep_time = delay - elapsed
+                console.print(f"[dim]   Rate limiting: waiting {sleep_time:.1f}s...[/dim]")
+                time.sleep(sleep_time)
+
+        self._last_request_time = time.time()
+
     def _get_youtube_api_transcript(self, video_id: str) -> RawTranscript:
-        """Get transcript using YouTube Transcript API."""
-        try:
-            from youtube_transcript_api import YouTubeTranscriptApi
+        """Get transcript using YouTube Transcript API with cookies and rate limiting."""
+        # Apply rate limiting
+        self._apply_rate_limiting()
 
-            ytt_api = YouTubeTranscriptApi()
-            transcript_list = ytt_api.fetch(video_id)
+        # Retry logic for rate limit errors
+        retries = 0
+        last_error = None
 
-            segments = [
-                TranscriptSegment(
-                    text=item.text,
-                    start=float(item.start),
-                    duration=float(item.duration),
+        while retries <= self.settings.rate_limiting_max_retries:
+            try:
+                from youtube_transcript_api import YouTubeTranscriptApi
+                from youtube_transcript_api._errors import (
+                    IpBlocked,
+                    RequestBlocked,
+                    TranscriptsDisabled,
+                    VideoUnavailable,
+                    HTTPError,
                 )
-                for item in transcript_list
-            ]
 
-            return RawTranscript(
-                video_id=video_id,
-                segments=segments,
-                source="youtube_api",
-                language="en",
-            )
+                ytt_api = YouTubeTranscriptApi()
 
-        except Exception as e:
-            raise YouTubeAPIError(f"YouTube API failed: {e}") from e
+                # Add cookies if enabled and available
+                if self.settings.youtube_api_use_cookies:
+                    cookie_string = self.cookie_manager.get_cookie_string()
+                    if cookie_string:
+                        console.print("[dim]   Using browser cookies for YouTube API[/dim]")
+                        # Monkey-patch requests to use our cookies
+                        # youtube_transcript_api uses requests internally
+                        import requests
+
+                        original_session = requests.Session
+
+                        def patched_session(*args, **kwargs):
+                            session = original_session(*args, **kwargs)
+                            # Parse cookie string and add to session
+                            for cookie_part in cookie_string.split("; "):
+                                if "=" in cookie_part:
+                                    name, value = cookie_part.split("=", 1)
+                                    session.cookies.set(name, value, domain=".youtube.com")
+                            return session
+
+                        requests.Session = patched_session
+
+                try:
+                    # Fetch transcript
+                    transcript_list = ytt_api.fetch(
+                        video_id, languages=self.settings.youtube_api_languages
+                    )
+                finally:
+                    # Restore original Session
+                    if self.settings.youtube_api_use_cookies and cookie_string:
+                        requests.Session = original_session
+
+                segments = [
+                    TranscriptSegment(
+                        text=item.text,
+                        start=float(item.start),
+                        duration=float(item.duration),
+                    )
+                    for item in transcript_list
+                ]
+
+                return RawTranscript(
+                    video_id=video_id,
+                    segments=segments,
+                    source="youtube_api",
+                    language="en",
+                )
+
+            except (IpBlocked, RequestBlocked) as e:
+                retries += 1
+                last_error = e
+                if retries <= self.settings.rate_limiting_max_retries:
+                    wait_time = self.settings.rate_limiting_retry_delay * (2 ** (retries - 1))
+                    console.print(
+                        f"[yellow]   IP blocked/rate limited, retrying in {wait_time:.1f}s "
+                        f"(attempt {retries}/{self.settings.rate_limiting_max_retries + 1})...[/yellow]"
+                    )
+                    time.sleep(wait_time)
+                else:
+                    raise YouTubeAPIError(
+                        f"IP blocked after {retries} attempts. Consider using proxies."
+                    ) from e
+
+            except (TranscriptsDisabled, VideoUnavailable) as e:
+                # These are not retryable errors
+                raise YouTubeAPIError(f"YouTube API failed: {e}") from e
+
+            except HTTPError as e:
+                # Check if it's a rate limit error
+                error_msg = str(e).lower()
+                if "429" in error_msg or "too many requests" in error_msg:
+                    retries += 1
+                    last_error = e
+                    if retries <= self.settings.rate_limiting_max_retries:
+                        wait_time = self.settings.rate_limiting_retry_delay * (2 ** (retries - 1))
+                        console.print(
+                            f"[yellow]   HTTP 429 rate limit, retrying in {wait_time:.1f}s "
+                            f"(attempt {retries}/{self.settings.rate_limiting_max_retries + 1})...[/yellow]"
+                        )
+                        time.sleep(wait_time)
+                    else:
+                        raise YouTubeAPIError(
+                            f"Rate limit exceeded after {retries} attempts"
+                        ) from e
+                else:
+                    raise YouTubeAPIError(f"YouTube API HTTP error: {e}") from e
+
+            except Exception as e:
+                # Check if it's a rate limit error in disguise
+                error_msg = str(e).lower()
+                if (
+                    "too many requests" in error_msg
+                    or "rate limit" in error_msg
+                    or "429" in error_msg
+                ):
+                    retries += 1
+                    last_error = e
+                    if retries <= self.settings.rate_limiting_max_retries:
+                        wait_time = self.settings.rate_limiting_retry_delay * (2 ** (retries - 1))
+                        console.print(
+                            f"[yellow]   Rate limit detected, retrying in {wait_time:.1f}s "
+                            f"(attempt {retries}/{self.settings.rate_limiting_max_retries + 1})...[/yellow]"
+                        )
+                        time.sleep(wait_time)
+                    else:
+                        raise YouTubeAPIError(
+                            f"Rate limit exceeded after {retries} attempts"
+                        ) from e
+                else:
+                    raise YouTubeAPIError(f"YouTube API failed: {e}") from e
+
+        # Should not reach here, but just in case
+        raise YouTubeAPIError(f"Failed after {retries} retries: {last_error}")
 
     def _transcribe_youtube_with_whisper(self, video_id: str) -> RawTranscript:
         """Download YouTube audio and transcribe with Whisper."""
@@ -99,7 +242,8 @@ class TranscriptionHandler:
 
     def _download_youtube_audio(self, video_id: str) -> Path:
         """Download audio from YouTube video using browser cookies."""
-        from src.video.cookie_manager import get_cookie_manager
+        # Apply rate limiting
+        self._apply_rate_limiting()
 
         output_path = self.work_dir / f"{video_id}_audio.mp3"
         url = f"https://www.youtube.com/watch?v={video_id}"
@@ -124,12 +268,11 @@ class TranscriptionHandler:
         ]
 
         # Add cookies from browser
-        cookie_manager = get_cookie_manager()
-        if cookie_manager.ensure_cookies():
-            cookie_args = cookie_manager.get_cookie_args()
+        if self.cookie_manager.ensure_cookies():
+            cookie_args = self.cookie_manager.get_cookie_args()
             if cookie_args:
                 cmd.extend(cookie_args)
-                print("Using browser cookies for audio download")
+                console.print("[dim]   Using browser cookies for audio download[/dim]")
 
         cmd.append(url)
 

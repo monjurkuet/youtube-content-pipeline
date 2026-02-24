@@ -202,6 +202,48 @@ class YouTubeCookieManager:
             return ["--cookies", str(self.cookie_file)]
         return []
 
+    def get_cookies_dict(self) -> dict[str, str] | None:
+        """
+        Get cookies as a dictionary for use with requests/httpx.
+
+        Returns:
+            Dictionary of cookie name -> value, or None if cookies unavailable
+        """
+        if not self._has_valid_cookies():
+            return None
+
+        try:
+            from http.cookiejar import MozillaCookieJar
+
+            cookie_jar = MozillaCookieJar(str(self.cookie_file))
+            cookie_jar.load(ignore_discard=True, ignore_expires=True)
+
+            # Filter for YouTube and Google cookies
+            cookies_dict = {}
+            for cookie in cookie_jar:
+                if "youtube" in cookie.domain or "google" in cookie.domain:
+                    cookies_dict[cookie.name] = cookie.value
+
+            return cookies_dict
+        except Exception as e:
+            console.print(f"[yellow]   Warning: Failed to load cookies dict: {e}[/yellow]")
+            return None
+
+    def get_cookie_string(self) -> str | None:
+        """
+        Get cookies as a Cookie header string for use with youtube_transcript_api.
+
+        Returns:
+            Cookie header string (e.g., "name1=value1; name2=value2"), or None if unavailable
+        """
+        cookies_dict = self.get_cookies_dict()
+        if not cookies_dict:
+            return None
+
+        # Format as Cookie header string
+        cookie_parts = [f"{name}={value}" for name, value in cookies_dict.items()]
+        return "; ".join(cookie_parts)
+
     def invalidate_cache(self):
         """Force re-extraction on next use by removing cookie file."""
         try:

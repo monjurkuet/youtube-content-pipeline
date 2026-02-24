@@ -7,10 +7,14 @@ A simple, robust pipeline for transcribing YouTube videos and saving transcripts
 - **Simple 2-Step Pipeline**: Get transcript → Save to MongoDB
 - **Automatic Fallback**: YouTube API → Whisper transcription
 - **Auto Cookie Management**: Extracts cookies from Chrome automatically
+- **Rate Limiting**: Configurable delays to prevent IP blocking (2-5s default)
+- **Retry Logic**: Exponential backoff for rate-limited requests
+- **YouTube API Cookie Support**: Passes browser cookies to API for less detectable requests
 - **OpenVINO Whisper**: Optimized transcription with GPU/CPU support
 - **REST API**: FastAPI endpoints for async transcription jobs
 - **MongoDB Storage**: Full transcripts with timestamps
 - **Channel Tracking**: Track YouTube channels and sync all videos with metadata
+- **YAML Configuration**: Centralized config file for all settings
 
 ## Installation
 
@@ -146,7 +150,50 @@ API endpoints:
 
 ## Configuration
 
-Create a `.env` file:
+### YAML Configuration (Recommended)
+
+Create a `config.yaml` file in the project root for runtime settings:
+
+```yaml
+# Rate Limiting - Prevents IP blocking
+rate_limiting:
+  enabled: true
+  min_delay: 2.0        # Random delay between 2-5 seconds
+  max_delay: 5.0
+  retry_delay: 10.0     # Base delay for exponential backoff
+  max_retries: 3
+
+# YouTube API Settings
+youtube_api:
+  use_cookies: true     # Use browser cookies to avoid detection
+  cookie_cache_hours: 24
+  timeout: 30
+  languages:
+    - en
+    - en-US
+
+# Batch Processing
+batch:
+  default_size: 5       # Default videos per batch
+  show_progress: true
+
+# Whisper Settings
+whisper:
+  audio_format: mp3
+  audio_bitrate: 128k
+  chunk_length: 30
+
+# Pipeline Settings
+pipeline:
+  work_dir: /tmp/transcription_pipeline
+  cache_dir: /tmp/transcription_cache
+  enable_cache: true
+  save_to_db: true
+```
+
+### Environment Variables (.env)
+
+Environment variables take precedence over `config.yaml`:
 
 ```bash
 # MongoDB
@@ -314,6 +361,10 @@ asyncio.run(db_operations())
 
 ## Cookie Management
 
+Cookies are automatically extracted from Chrome and used for:
+- YouTube video downloads (yt-dlp)
+- YouTube Transcript API requests (makes requests less detectable)
+
 ```bash
 # Check cookie status
 uv run python -m src.video.cookie_manager --status
@@ -321,6 +372,8 @@ uv run python -m src.video.cookie_manager --status
 # Force re-extraction
 uv run python -m src.video.cookie_manager --invalidate
 ```
+
+Cookies are cached for 24 hours by default (configurable in `config.yaml`).
 
 ## Running Tests
 

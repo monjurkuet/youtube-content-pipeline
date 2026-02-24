@@ -377,5 +377,54 @@ You want to ensure all videos have complete metadata:
 # Takes ~40 minutes
 uv run python -m src.cli channel sync @ChartChampions --all --max-videos 2000
 # Updates: Existing videos with missing metadata
+
+---
+
+## ⚙️ Configuration & Rate Limiting
+
+### **Rate Limiting**
+
+To prevent IP blocking when transcribing multiple videos:
+
+- **Automatic delays**: 2-5 seconds random delay between each video transcription
+- **Exponential backoff**: Automatic retry with increasing delays if rate limited
+- **Cookie support**: Browser cookies passed to YouTube API for less detectable requests
+
+### **Configure Settings**
+
+Edit `config.yaml` in the project root:
+
+```yaml
+# Adjust rate limiting delays
+rate_limiting:
+  enabled: true
+  min_delay: 2.0      # Minimum delay between videos (seconds)
+  max_delay: 5.0      # Maximum delay between videos (seconds)
+  retry_delay: 10.0   # Base delay for retries
+  max_retries: 3      # Number of retry attempts
+
+# Batch processing
+batch:
+  default_size: 5     # Default videos per batch
+```
+
+### **Best Practices**
+
+1. **Use batch processing**: Process videos in small batches (5-20) to avoid overwhelming the API
+2. **Run repeatedly**: For large channels, run `transcribe-pending` multiple times
+3. **Monitor for errors**: Watch for rate limit messages and adjust delays if needed
+4. **Keep cookies fresh**: Cookies are cached for 24 hours; re-extract if you see authentication errors
+
+### **Troubleshooting IP Blocking**
+
+If you encounter IP blocking:
+
+1. **Increase delays**: Edit `config.yaml` to increase `min_delay` and `max_delay`
+2. **Reduce batch size**: Use smaller `--batch-size` values
+3. **Wait and retry**: Take a break and try again later
+4. **Check cookies**: Ensure you're logged into YouTube in Chrome
+   ```bash
+   uv run python -m src.video.cookie_manager --status
+   ```
 ```
 
