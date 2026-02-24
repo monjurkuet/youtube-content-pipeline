@@ -584,16 +584,28 @@ def channel_transcribe_pending(
                         )
 
                     # Get transcript ID and mark as completed (fresh DB manager)
+                    # Add retry logic in case DB write hasn't completed yet
                     db = MongoDBManager()
                     try:
-                        transcript = await db.get_transcript(video.video_id)
+                        transcript = None
+                        max_retries = 3
+                        for attempt in range(max_retries):
+                            transcript = await db.get_transcript(video.video_id)
+                            if transcript:
+                                break
+                            if attempt < max_retries - 1:
+                                rprint(
+                                    f"  [dim]   Waiting for DB write to complete (attempt {attempt + 1}/{max_retries})...[/dim]"
+                                )
+                                await asyncio.sleep(0.5 * (attempt + 1))
+
                         if transcript:
                             await db.mark_transcript_completed(video.video_id, transcript["_id"])
                             rprint(f"  [green]✓ Transcribed and marked complete[/green]")
                             successes += 1
                         else:
                             rprint(
-                                f"  [yellow]⚠ Transcribed but transcript not found in DB[/yellow]"
+                                f"  [yellow]⚠ Transcribed but transcript not found in DB after {max_retries} attempts[/yellow]"
                             )
                             successes += 1
                     finally:
