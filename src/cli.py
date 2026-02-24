@@ -399,9 +399,18 @@ def channel_transcribe_pending(
     handle: str | None = typer.Argument(
         None, help="Channel handle (optional, transcribe all if not specified)"
     ),
-    batch_size: int = typer.Option(5, "-b", "--batch-size", help="Number of videos to transcribe"),
+    batch_size: int = typer.Option(
+        5, "-b", "--batch-size", help="Number of videos to transcribe per batch"
+    ),
+    all_videos: bool = typer.Option(
+        False, "--all", "-a", help="Transcribe ALL pending videos (no limit)"
+    ),
 ):
-    """Transcribe pending videos from channel."""
+    """Transcribe pending videos from channel.
+
+    Use --batch-size to process videos in small batches (safer),
+    or use --all to transcribe everything at once.
+    """
     from src.channel import resolve_channel_handle, get_pending_videos, mark_video_transcribed
     from src.pipeline import get_transcript
     from src.database import get_db_manager
@@ -494,9 +503,18 @@ def channel_transcribe_pending(
             rprint("[green]✓ No pending videos to transcribe![/green]\n")
             return
 
-        rprint(
-            f"Found {len(pending)} pending video(s), processing {min(batch_size, len(pending))}...\n"
-        )
+        # Determine how many to process
+        if all_videos:
+            num_to_process = len(pending)
+            rprint(
+                f"[yellow]⚠ Processing ALL {len(pending)} pending videos (this may take a while)[/yellow]"
+            )
+            rprint(f"[dim]Tip: Use --batch-size 10 for safer batch processing[/dim]\n")
+        else:
+            num_to_process = min(batch_size, len(pending))
+            rprint(f"[dim]Processing {num_to_process} video(s) (use --all to process all)[/dim]\n")
+
+        rprint(f"Found {len(pending)} pending video(s), processing {num_to_process}...\n")
 
         successes = 0
         failures = 0
@@ -510,8 +528,8 @@ def channel_transcribe_pending(
         async def process_all():
             nonlocal successes, failures, skipped
 
-            for i, video in enumerate(pending[:batch_size], 1):
-                rprint(f"[dim]{i}/{min(batch_size, len(pending))}[/dim] {video.title[:50]}...")
+            for i, video in enumerate(pending[:num_to_process], 1):
+                rprint(f"[dim]{i}/{num_to_process}[/dim] {video.title[:50]}...")
 
                 # Check video availability first
                 rprint(f"  [dim]Checking availability...[/dim]")
