@@ -32,6 +32,7 @@ from src.mcp.resources.jobs import get_job_template, read_job_resource
 from src.mcp.resources.transcripts import get_transcript_template, read_transcript_resource
 from src.mcp.tools.channels import (
     add_channel,
+    add_channels_from_videos,
     list_channel_videos,
     list_channels,
     remove_channel,
@@ -228,12 +229,64 @@ async def tool_transcribe_channel_pending(handle: str, limit: int = 10) -> dict[
 
 
 @mcp.tool(
-    name="list_channels",
+    name="list_channel_videos",
     description=(
-        "List all tracked YouTube channels. "
-        "Returns channels sorted by when they were added (newest first)."
+        "List videos for a specific channel. Returns video metadata sorted by publication date."
     ),
 )
+async def tool_list_channel_videos(
+    channel_id: str,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List videos for a channel.
+
+    Args:
+        channel_id: YouTube channel ID
+        limit: Maximum number of videos to return
+        offset: Number of videos to skip
+
+    Returns:
+        List of video metadata
+    """
+    return await list_channel_videos(
+        channel_id=channel_id,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@mcp.tool(
+    name="add_channels_from_videos",
+    description=(
+        "Add YouTube channels from video URLs. "
+        "Extracts channel information from video URLs and adds channels to tracking. "
+        "Automatically syncs videos from each channel (configurable). "
+        "Returns summary of added, skipped, and failed channels."
+    ),
+)
+async def tool_add_channels_from_videos(
+    video_urls: list[str],
+    auto_sync: bool = True,
+    sync_mode: str = "recent",
+) -> dict[str, Any]:
+    """Add channels from YouTube video URLs.
+
+    Args:
+        video_urls: List of YouTube video URLs to extract channels from
+        auto_sync: Whether to sync channel videos after adding (default: True)
+        sync_mode: Sync mode - "recent" for ~15 videos, "all" for all videos
+
+    Returns:
+        dict with added channels, skipped channels, and failures
+    """
+    return await add_channels_from_videos(
+        video_urls=video_urls,
+        auto_sync=auto_sync,
+        sync_mode=sync_mode,
+    )
+
+
 async def tool_list_channels(limit: int = 100) -> dict[str, Any]:
     """List all tracked channels.
 
@@ -248,10 +301,7 @@ async def tool_list_channels(limit: int = 100) -> dict[str, Any]:
 
 @mcp.tool(
     name="remove_channel",
-    description=(
-        "Remove a channel from tracking. "
-        "Video metadata and transcripts are preserved."
-    ),
+    description=("Remove a channel from tracking. Video metadata and transcripts are preserved."),
 )
 async def tool_remove_channel(channel_id: str) -> dict[str, Any]:
     """Remove a channel from tracking.
@@ -268,8 +318,7 @@ async def tool_remove_channel(channel_id: str) -> dict[str, Any]:
 @mcp.tool(
     name="list_channel_videos",
     description=(
-        "List videos for a specific channel. "
-        "Returns video metadata sorted by publication date."
+        "List videos for a specific channel. Returns video metadata sorted by publication date."
     ),
 )
 async def tool_list_channel_videos(

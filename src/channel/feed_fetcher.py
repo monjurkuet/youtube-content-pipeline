@@ -10,10 +10,44 @@ from typing import Literal
 from rich.console import Console
 
 from src.core.http_session import get
+from src.video.cookie_manager import YouTubeCookieManager
 
 from .schemas import VideoMetadata
 
 console = Console()
+
+# Global cookie manager instance
+_cookie_manager: YouTubeCookieManager | None = None
+
+
+def _get_cookie_manager() -> YouTubeCookieManager:
+    """Get or create cookie manager instance."""
+    global _cookie_manager
+    if _cookie_manager is None:
+        _cookie_manager = YouTubeCookieManager(auto_extract=True)
+    return _cookie_manager
+
+
+def _ensure_cookies() -> list[str]:
+    """Ensure cookies are available and return yt-dlp args.
+
+    Returns:
+        List of command arguments (e.g., ["--cookies", "/path/to/cookies.txt"])
+    """
+    cookie_manager = _get_cookie_manager()
+    # Ensure cookies exist (auto-extract if needed and enabled)
+    cookie_manager.ensure_cookies()
+    return cookie_manager.get_cookie_args()
+
+
+def _is_age_restricted_error(stderr: str) -> bool:
+    """Check if stderr indicates age-restricted content."""
+    return "age" in stderr.lower() and "restrict" in stderr.lower()
+
+
+def _is_private_error(stderr: str) -> bool:
+    """Check if stderr indicates private/unavailable content."""
+    return "private" in stderr.lower() or "unavailable" in stderr.lower()
 
 
 def fetch_latest_from_rss(channel_id: str, limit: int = 15) -> list[VideoMetadata]:
@@ -121,6 +155,168 @@ def fetch_latest_from_rss(channel_id: str, limit: int = 15) -> list[VideoMetadat
         return []
 
 
+def fetch_recent_with_ytdlp(channel_url: str, max_videos: int = 15) -> list[VideoMetadata]:
+    """
+    Fetch recent videos from channel using yt-dlp (fast mode).
+
+    Uses --flat-playlist to get video IDs quickly, then --simulate
+    to get metadata for each video. This is faster than full metadata
+    fetch for a small number of videos.
+
+    Args:
+        channel_url: YouTube channel URL
+        max_videos: Maximum videos to fetch
+
+    Returns:
+        List of VideoMetadata objects
+    """
+    console.print(f"[dim]Fetching recent videos with yt-dlp: {channel_url}[/dim]")
+    console.print(f"[dim]   Limit: {max_videos} videos[/dim]")
+
+    videos = []
+    skipped_age_restricted = 0
+    skipped_private = 0
+
+    try:
+        # Get cookie args
+        cookie_args = _ensure_cookies()
+
+        # Step 1: Get video IDs quickly with --flat-playlist
+        cmd = [
+            "yt-dlp",
+            "--flat-playlist",
+            "--dump-json",
+            "--no-warnings",
+            "--quiet",
+            f"--playlist-end={max_videos}",
+        ]
+        cmd.extend(cookie_args)  # Add cookies if available
+        cmd.append(channel_url)
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            if _is_age_restricted_error(stderr):
+                console.print("[yellow]   Some content may be age-restricted[/yellow]")
+            else:
+                console.print(f"[yellow]yt-dlp warning: {stderr[:200]}[/yellow]")
+
+        video_ids = []
+        for line in result.stdout.strip().split("\n"):
+            if line.strip():
+                try:
+                    data = json.loads(line)
+                    video_id = data.get("id")
+                    title = data.get("title", "Unknown")
+                    if video_id:
+                        video_ids.append((video_id, title))
+                except json.JSONDecodeError:
+                    continue
+
+        if not video_ids:
+            console.print("[yellow]No videos found[/yellow]")
+            return []
+
+        console.print(f"[dim]   Found {len(video_ids)} videos, fetching metadata...[/dim]")
+
+        # Step 2: Get metadata for each video
+        for video_id, title in video_ids:
+            try:
+                cmd = [
+                    "yt-dlp",
+                    "--simulate",
+                    "--dump-json",
+                    "--no-warnings",
+                    "--quiet",
+                ]
+                cmd.extend(cookie_args)  # Add cookies if available
+                cmd.append(f"https://www.youtube.com/watch?v={video_id}")
+
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+
+                stderr = result.stderr.strip().lower()
+
+                # Check for age-restricted or private videos
+                if _is_age_restricted_error(stderr):
+                    skipped_age_restricted += 1
+                    console.print(f"[dim]   ⊘ Skipped (age-restricted): {video_id}[/dim]")
+                    continue
+                if _is_private_error(stderr):
+                    skipped_private += 1
+                    console.print(f"[dim]   ⊘ Skipped (private/unavailable): {video_id}[/dim]")
+                    continue
+
+                if result.returncode == 0 and result.stdout.strip():
+                    data = json.loads(result.stdout.strip())
+
+                    # Parse date
+                    published_at = None
+                    upload_date = data.get("upload_date")
+                    if upload_date:
+                        with contextlib.suppress(ValueError):
+                            published_at = datetime.strptime(upload_date, "%Y%m%d")
+
+                    # Extract channel info
+                    channel_id = data.get("channel_id")
+                    channel_title = data.get("channel") or data.get("uploader")
+
+                    # Extract thumbnail
+                    thumbnail = data.get("thumbnail")
+                    if not thumbnail:
+                        thumbnails = data.get("thumbnails", [])
+                        if thumbnails:
+                            thumbnail = thumbnails[-1].get("url")
+
+                    videos.append(
+                        VideoMetadata(
+                            video_id=video_id,
+                            title=data.get("title", title),
+                            description=data.get("description"),
+                            thumbnail_url=thumbnail,
+                            duration_seconds=int(data.get("duration"))
+                            if data.get("duration")
+                            else None,
+                            view_count=int(data.get("view_count"))
+                            if data.get("view_count")
+                            else None,
+                            published_at=published_at,
+                            channel_id=channel_id,
+                            channel_title=channel_title,
+                        )
+                    )
+
+            except Exception as e:
+                console.print(f"[yellow]Warning: Failed to fetch {video_id}: {e}[/yellow]")
+                continue
+
+        # Report results
+        if skipped_age_restricted > 0 or skipped_private > 0:
+            console.print(
+                f"[dim]   Skipped: {skipped_age_restricted} age-restricted, "
+                f"{skipped_private} private/unavailable[/dim]"
+            )
+        console.print(f"[green]✓ Fetched {len(videos)} videos[/green]")
+        return videos
+
+    except subprocess.TimeoutExpired:
+        console.print("[red]Error: yt-dlp timeout[/red]")
+        return []
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        return []
+
+
 def fetch_all_with_ytdlp(
     channel_url: str, progress_callback=None, max_videos: int | None = None
 ) -> list[VideoMetadata]:
@@ -146,8 +342,14 @@ def fetch_all_with_ytdlp(
 
     videos = []
     seen_ids = set()
+    skipped_age_restricted = 0
+    skipped_private = 0
+    skipped_other = 0
 
     try:
+        # Get cookie args
+        cookie_args = _ensure_cookies()
+
         # Use yt-dlp with --simulate to get full metadata without downloading
         # This extracts upload_date, duration, view_count, etc. for EVERY video
         cmd = [
@@ -157,6 +359,9 @@ def fetch_all_with_ytdlp(
             "--no-warnings",
             "--quiet",
         ]
+
+        # Add cookie args
+        cmd.extend(cookie_args)
 
         # Only add playlist-end if specified
         if max_videos is not None:
@@ -267,7 +472,13 @@ def fetch_all_with_ytdlp(
 
         if process.returncode != 0:
             stderr = process.stderr.read()
-            console.print(f"[yellow]yt-dlp completed with warnings: {stderr}[/yellow]")
+            # Check for specific error types
+            if _is_age_restricted_error(stderr):
+                console.print("[yellow]   Some videos skipped (age-restricted)[/yellow]")
+            elif _is_private_error(stderr):
+                console.print("[yellow]   Some videos skipped (private/unavailable)[/yellow]")
+            else:
+                console.print(f"[yellow]yt-dlp completed with warnings: {stderr[:300]}[/yellow]")
 
         # Sort by published date (newest first)
         videos.sort(key=lambda v: v.published_at or datetime.min, reverse=True)
@@ -306,7 +517,16 @@ def fetch_videos(
         List of VideoMetadata objects
     """
     if mode == "recent":
-        return fetch_latest_from_rss(channel_id)
+        # Try RSS first
+        videos = fetch_latest_from_rss(channel_id)
+
+        # If RSS fails (some channels don't have RSS), fall back to yt-dlp
+        if not videos:
+            console.print("[yellow]RSS feed failed, falling back to yt-dlp...[/yellow]")
+            # Fetch recent videos using yt-dlp (limit to ~15 for "recent" mode)
+            videos = fetch_recent_with_ytdlp(channel_url, max_videos=max_videos or 15)
+
+        return videos
     else:
         return fetch_all_with_ytdlp(channel_url, max_videos=max_videos)
 

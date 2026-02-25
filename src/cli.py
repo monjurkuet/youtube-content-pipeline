@@ -16,9 +16,104 @@ from src.pipeline import get_transcript
 
 app = typer.Typer(help="Transcription Pipeline - Get transcripts and save to DB")
 channel_app = typer.Typer(help="Channel tracking commands")
+cookie_app = typer.Typer(help="Cookie management commands")
 app.add_typer(channel_app, name="channel")
+app.add_typer(cookie_app, name="cookie")
 console = Console()
 log = get_logger("cli")
+
+
+# Cookie management commands
+@cookie_app.command("extract")
+def cookie_extract():
+    """Extract cookies from Chrome browser for YouTube.
+
+    This command extracts authentication cookies from Chrome browser
+    which are required for accessing age-restricted content.
+    """
+    from src.video.cookie_manager import get_cookie_manager
+
+    try:
+        rprint("\n[bold blue]Extracting YouTube cookies from Chrome...[/bold blue]\n")
+
+        manager = get_cookie_manager()
+        success = manager.ensure_cookies()
+
+        if success:
+            status = manager.get_status()
+            rprint("\n[green]✓ Cookies extracted successfully![/green]")
+            rprint(f"   YouTube cookies: {status.get('youtube_cookies', 'N/A')}")
+            rprint(f"   Google cookies: {status.get('google_cookies', 'N/A')}")
+            rprint(f"   Has auth: {'✓ Yes' if status.get('has_auth') else '✗ No'}")
+            rprint(f"   Cookie age: {status.get('cookie_age_hours', 'N/A'):.1f} hours\n")
+        else:
+            rprint("\n[red]✗ Failed to extract cookies[/red]")
+            rprint("[dim]   Make sure Chrome is installed and you're logged into YouTube[/dim]\n")
+            raise typer.Exit(1)
+
+    except Exception as e:
+        rprint(f"[red]✗ Error: {escape(str(e))}[/red]")
+        raise typer.Exit(1) from e
+
+
+@cookie_app.command("status")
+def cookie_status():
+    """Show current cookie status and metadata."""
+    from src.video.cookie_manager import get_cookie_manager
+
+    try:
+        rprint("\n[bold]Cookie Status[/bold]\n")
+
+        manager = get_cookie_manager()
+        status = manager.get_status()
+
+        table = Table(show_header=False, box=None)
+        table.add_column("Field", style="cyan", width=30)
+        table.add_column("Value", style="white")
+
+        table.add_row("Cookie file exists", "✓ Yes" if status.get("cookie_file_exists") else "✗ No")
+        table.add_row(
+            "Auto-extract enabled", "✓ Yes" if status.get("auto_extract_enabled") else "✗ No"
+        )
+
+        if status.get("cookie_file_exists"):
+            table.add_row("Cookie age", f"{status.get('cookie_age_hours', 0):.1f} hours")
+            table.add_row("Is fresh (not expired)", "✓ Yes" if status.get("is_fresh") else "✗ No")
+
+        if status.get("youtube_cookies"):
+            table.add_row("YouTube cookies", str(status.get("youtube_cookies")))
+        if status.get("google_cookies"):
+            table.add_row("Google cookies", str(status.get("google_cookies")))
+        table.add_row("Has authentication", "✓ Yes" if status.get("has_auth") else "✗ No")
+
+        if status.get("last_extracted"):
+            table.add_row("Last extracted", status.get("last_extracted"))
+
+        console.print(table)
+        rprint()
+
+    except Exception as e:
+        rprint(f"[red]✗ Error: {escape(str(e))}[/red]")
+        raise typer.Exit(1) from e
+
+
+@cookie_app.command("invalidate")
+def cookie_invalidate():
+    """Invalidate cookie cache to force re-extraction on next use."""
+    from src.video.cookie_manager import get_cookie_manager
+
+    try:
+        rprint("\n[bold yellow]Invalidating cookie cache...[/bold yellow]\n")
+
+        manager = get_cookie_manager()
+        manager.invalidate_cache()
+
+        rprint("[green]✓ Cookie cache invalidated[/green]")
+        rprint("[dim]   Cookies will be re-extracted on next use\n")
+
+    except Exception as e:
+        rprint(f"[red]✗ Error: {escape(str(e))}[/red]")
+        raise typer.Exit(1) from e
 
 
 @app.callback()
@@ -233,6 +328,260 @@ def channel_add(
     except Exception as e:
         rprint(f"[red]✗ Error: {escape(str(e))}[/red]")
         raise typer.Exit(1) from e
+
+
+@channel_app.command("add-from-videos")
+def channel_add_from_videos(
+    video_urls: list[str] = typer.Argument(..., help="YouTube video URLs"),
+    auto_sync: bool = typer.Option(
+        True, "--sync/--no-sync", help="Auto-sync channel videos after adding"
+    ),
+    sync_mode: str = typer.Option(
+        "recent",
+        "--sync-mode",
+        help="Sync mode: 'recent' (~15 videos) or 'all' (all videos)",
+    ),
+):
+    """Add channels from YouTube video URLs.
+
+    Extracts channel information from video URLs and adds channels to tracking.
+    Optionally syncs videos from each channel.
+    """
+    import asyncio
+    import json
+    import subprocess
+    from typing import Any
+
+    from src.channel import resolve_channel_handle
+    from src.channel.schemas import ChannelDocument
+    from src.channel.sync import sync_channel
+    from src.database.manager import MongoDBManager
+
+    def extract_video_id(url: str) -> str | None:
+        """Extract video ID from YouTube URL."""
+        import re
+
+        match = re.search(r"(?:v=|\.be/)([a-zA-Z0-9_-]{11})", url)
+        return match.group(1) if match else None
+
+    def get_channel_from_video(video_id: str) -> dict[str, str] | None:
+        """Get channel info from video ID using yt-dlp."""
+        from src.video.cookie_manager import YouTubeCookieManager
+
+        try:
+            # Ensure cookies are available
+            cookie_manager = YouTubeCookieManager(auto_extract=True)
+            cookie_manager.ensure_cookies()
+            cookie_args = cookie_manager.get_cookie_args()
+
+            cmd = [
+                "yt-dlp",
+                "--dump-json",
+                "--no-warnings",
+                "--quiet",
+            ]
+            cmd.extend(cookie_args)  # Add cookies if available
+            cmd.append(f"https://www.youtube.com/watch?v={video_id}")
+
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+            if result.returncode == 0 and result.stdout.strip():
+                data = json.loads(result.stdout.strip())
+                channel_id = data.get("channel_id")
+                channel_handle = data.get("channel", "") or data.get("uploader", "")
+
+                if channel_id:
+                    return {
+                        "channel_id": channel_id,
+                        "channel_handle": channel_handle,
+                    }
+
+            return None
+        except Exception as e:
+            console.print(f"[dim]   Error fetching video {video_id}: {e}[/dim]")
+            return None
+
+    async def _process_all():
+        """Process all video URLs and return channels to sync."""
+        async with MongoDBManager() as db:
+            processed_channels: set[str] = set()
+            results = {
+                "added": [],
+                "skipped_duplicate": [],
+                "skipped_existing": [],
+                "failed": [],
+            }
+            channels_to_sync: list[dict[str, Any]] = []
+
+            for url in video_urls:
+                video_id = extract_video_id(url)
+                if not video_id:
+                    rprint(f"[yellow]⚠ Invalid URL: {url}[/yellow]")
+                    results["failed"].append({"url": url, "error": "Invalid URL format"})
+                    continue
+
+                console.print(f"[dim]Processing: {video_id}[/dim]")
+
+                channel_info = get_channel_from_video(video_id)
+                if not channel_info:
+                    rprint(f"[yellow]⚠ Could not get channel info for {video_id}[/yellow]")
+                    results["failed"].append(
+                        {"url": url, "video_id": video_id, "error": "Could not fetch channel info"}
+                    )
+                    continue
+
+                channel_id = channel_info["channel_id"]
+                channel_handle = channel_info["channel_handle"]
+
+                # Check if already processed in this batch
+                if channel_id in processed_channels:
+                    rprint(
+                        f"[green]✓ Channel already processed in this batch: {channel_handle}[/green]"
+                    )
+                    results["skipped_duplicate"].append(
+                        {"url": url, "channel_id": channel_id, "channel_handle": channel_handle}
+                    )
+                    continue
+
+                # Check if channel already exists in database
+                existing_channel = await db.channels.find_one({"channel_id": channel_id})
+                if existing_channel:
+                    rprint(
+                        f"[yellow]⚠ Channel already tracked: @{existing_channel.get('channel_handle')}[/yellow]"
+                    )
+                    results["skipped_existing"].append(
+                        {
+                            "url": url,
+                            "channel_id": channel_id,
+                            "channel_handle": existing_channel.get("channel_handle"),
+                        }
+                    )
+                    processed_channels.add(channel_id)
+                    continue
+
+                try:
+                    # Use channel_id directly from yt-dlp (more reliable)
+                    channel_url = f"https://www.youtube.com/channel/{channel_id}"
+
+                    # Create a normalized handle from the channel name
+                    # Remove spaces, special chars, and lowercase for consistency
+                    normalized_handle = "".join(c for c in channel_handle if c.isalnum())[
+                        :30
+                    ]  # Max 30 chars
+
+                    # Check if channel already exists with this ID
+                    existing_channel = await db.channels.find_one({"channel_id": channel_id})
+                    if existing_channel:
+                        rprint(
+                            f"[yellow]⚠ Channel already tracked: @{existing_channel.get('channel_handle')}[/yellow]"
+                        )
+                        results["skipped_existing"].append(
+                            {
+                                "url": url,
+                                "channel_id": channel_id,
+                                "channel_handle": existing_channel.get("channel_handle"),
+                            }
+                        )
+                        processed_channels.add(channel_id)
+                        continue
+
+                    # Save channel to database
+                    channel_doc = ChannelDocument(
+                        channel_id=channel_id,
+                        channel_handle=normalized_handle,
+                        channel_title=channel_handle,
+                        channel_url=channel_url,
+                    )
+
+                    doc_id = await db.save_channel(channel_doc)
+
+                    result_entry: dict[str, Any] = {
+                        "url": url,
+                        "channel_id": channel_id,
+                        "channel_handle": channel_doc.channel_handle,
+                        "channel_title": channel_doc.channel_title,
+                        "database_id": doc_id,
+                    }
+
+                    # Auto-sync if requested
+                    # Note: sync_channel must be called outside async context
+                    # Store channel info for syncing after async block
+                    channels_to_sync.append(
+                        {
+                            "channel_id": channel_id,
+                            "channel_url": channel_url,
+                            "channel_title": channel_doc.channel_title,
+                            "result_entry": result_entry,
+                        }
+                    )
+
+                    results["added"].append(result_entry)
+                    processed_channels.add(channel_id)
+                    rprint(f"[green]✓ Added: {channel_doc.channel_title}[/green]\n")
+
+                except Exception as e:
+                    rprint(f"[red]✗ Failed to add channel: {e}[/red]")
+                    results["failed"].append({"url": url, "video_id": video_id, "error": str(e)})
+
+        # Summary
+        rprint("\n" + "=" * 60)
+        rprint("[bold]Summary[/bold]")
+        rprint("=" * 60)
+        rprint(f"  [green]Channels added: {len(results['added'])}[/green]")
+        if results["added"]:
+            for entry in results["added"]:
+                sync_info = ""
+                if "sync_videos_fetched" in entry:
+                    sync_info = f" ({entry['sync_videos_fetched']} videos)"
+                rprint(f"    • {entry['channel_title']}{sync_info}")
+
+        if results["skipped_duplicate"]:
+            rprint(
+                f"  [yellow]Skipped (duplicate in batch): {len(results['skipped_duplicate'])}[/yellow]"
+            )
+
+        if results["skipped_existing"]:
+            rprint(f"  [dim]Skipped (already tracked): {len(results['skipped_existing'])}[/dim]")
+            for entry in results["skipped_existing"]:
+                rprint(f"    • {entry['channel_handle']}")
+
+        if results["failed"]:
+            rprint(f"  [red]Failed: {len(results['failed'])}[/red]")
+            for entry in results["failed"]:
+                error_msg = entry.get("error", "Unknown error")[:50]
+                rprint(f"    • {entry.get('url', 'Unknown')}: {error_msg}")
+
+        rprint("=" * 60 + "\n")
+        return results, channels_to_sync
+
+    # Run the async processing
+    try:
+        results, channels_to_sync = asyncio.run(_process_all())
+    except Exception as e:
+        rprint(f"[red]✗ Error: {escape(str(e))}[/red]")
+        raise typer.Exit(1) from e
+
+    # Sync channels outside async context (sync_channel uses asyncio.run internally)
+    if auto_sync and channels_to_sync:
+        rprint("\n[bold blue]Syncing channels...[/bold blue]\n")
+        for ch_info in channels_to_sync:
+            try:
+                sync_result = sync_channel(
+                    channel_id=ch_info["channel_id"],
+                    channel_url=ch_info["channel_url"],
+                    mode=sync_mode,
+                    db_manager=None,  # sync_channel will create its own DB connection
+                )
+                ch_info["result_entry"]["sync_videos_fetched"] = str(sync_result.videos_fetched)
+                ch_info["result_entry"]["sync_videos_new"] = str(sync_result.videos_new)
+                rprint(
+                    f"[green]✓ {ch_info['channel_title']}: {sync_result.videos_fetched} videos "
+                    f"({sync_result.videos_new} new)[/green]"
+                )
+            except Exception as sync_error:
+                rprint(f"[yellow]⚠ {ch_info['channel_title']}: Sync failed - {sync_error}[/yellow]")
+                ch_info["result_entry"]["sync_error"] = str(sync_error)
+        rprint()
 
 
 @channel_app.command("list")

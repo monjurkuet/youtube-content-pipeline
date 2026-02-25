@@ -4,29 +4,46 @@ from datetime import datetime
 
 from rich.console import Console
 
+from src.video.cookie_manager import YouTubeCookieManager
+
 from .feed_fetcher import fetch_videos
 from .resolver import resolve_channel_handle
 from .schemas import ChannelDocument, SyncResult, VideoMetadata, VideoMetadataDocument
 
 console = Console()
 
+# Global cookie manager instance
+_cookie_manager: YouTubeCookieManager | None = None
+
+
+def _get_cookie_manager() -> YouTubeCookieManager:
+    """Get or create cookie manager instance."""
+    global _cookie_manager
+    if _cookie_manager is None:
+        _cookie_manager = YouTubeCookieManager(auto_extract=True)
+    return _cookie_manager
+
 
 def sync_channel(
-    handle: str,
+    handle: str | None = None,
     mode: str = "recent",
     db_manager=None,
     max_videos: int | None = None,
     incremental: bool = False,
+    channel_id: str | None = None,
+    channel_url: str | None = None,
 ) -> SyncResult:
     """
     Sync channel videos to database.
 
     Args:
-        handle: Channel handle (e.g., "@ChartChampions")
+        handle: Channel handle (e.g., "@ChartChampions") - optional if channel_id/channel_url provided
         mode: "recent" for RSS (~15 videos) or "all" for yt-dlp (all videos)
         db_manager: Optional MongoDB manager instance
         max_videos: Maximum videos to fetch (None = all)
         incremental: If True, only fetch metadata for new videos (slower but efficient)
+        channel_id: YouTube channel ID - optional if handle provided
+        channel_url: YouTube channel URL - optional if handle provided
 
     Returns:
         SyncResult with sync statistics
@@ -35,8 +52,15 @@ def sync_channel(
 
     db = db_manager or get_default_db()
 
-    # Resolve channel handle
-    channel_id, channel_url = resolve_channel_handle(handle)
+    # Resolve channel handle or use provided channel_id/channel_url
+    if channel_id and channel_url:
+        # Use provided channel_id and channel_url directly
+        pass
+    elif handle:
+        # Resolve channel handle
+        channel_id, channel_url = resolve_channel_handle(handle)
+    else:
+        raise ValueError("Either handle or both channel_id and channel_url must be provided")
 
     # Fetch videos
     console.print(f"\n[bold blue]Fetching videos (mode: {mode})...[/bold blue]\n")
@@ -72,8 +96,8 @@ def sync_channel(
 
         channel_doc = ChannelDocument(
             channel_id=channel_id,
-            channel_handle=handle.lstrip("@"),
-            channel_title=videos_fetched[0].channel_title or handle,
+            channel_handle=handle.lstrip("@") if handle else channel_id,
+            channel_title=videos_fetched[0].channel_title or handle or channel_id,
             channel_url=channel_url,
             last_synced=datetime.utcnow(),
             total_videos_tracked=len(videos_fetched),
@@ -124,12 +148,13 @@ def sync_channel(
 
         return channel_doc, videos_new, videos_existing
 
-    # Note: This is safe because sync_channel() is called from sync CLI context
+    # Note: asyncio.run() is safe here because sync_channel() is designed to be
+    # called from synchronous contexts (CLI commands).
     channel_doc, videos_new, videos_existing = asyncio.run(_save_all())
 
     return SyncResult(
         channel_id=channel_id,
-        channel_handle=handle.lstrip("@"),
+        channel_handle=handle.lstrip("@") if handle else channel_id,
         channel_title=channel_doc.channel_title,
         sync_mode=mode if mode in ("recent", "all") else "recent",  # type: ignore
         videos_fetched=len(videos_fetched),
@@ -239,6 +264,11 @@ def _fetch_new_videos_only(
 
     console.print("[dim]Step 1: Fetching video IDs (fast mode)...[/dim]")
 
+    # Get cookie args
+    cookie_manager = _get_cookie_manager()
+    cookie_manager.ensure_cookies()
+    cookie_args = cookie_manager.get_cookie_args()
+
     # Step 1: Fast fetch all video IDs
     cmd = [
         "yt-dlp",
@@ -247,6 +277,7 @@ def _fetch_new_videos_only(
         "--no-warnings",
         "--quiet",
     ]
+    cmd.extend(cookie_args)  # Add cookies if available
     if max_videos:
         cmd.append(f"--playlist-end={max_videos}")
     cmd.append(channel_url)
@@ -305,9 +336,21 @@ def _fetch_new_videos_only(
                     "--dump-json",
                     "--no-warnings",
                     "--quiet",
-                    f"https://www.youtube.com/watch?v={video_id}",
                 ]
+                cmd.extend(cookie_args)  # Add cookies if available
+                cmd.append(f"https://www.youtube.com/watch?v={video_id}")
+
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+                stderr = result.stderr.lower()
+
+                # Check for age-restricted or private videos
+                if "age" in stderr and "restrict" in stderr:
+                    console.print(f"[dim]   ⊘ Skipped (age-restricted): {video_id}[/dim]")
+                    continue
+                if "private" in stderr or "unavailable" in stderr:
+                    console.print(f"[dim]   ⊘ Skipped (private): {video_id}[/dim]")
+                    continue
 
                 if result.returncode == 0 and result.stdout.strip():
                     data = json.loads(result.stdout.strip())

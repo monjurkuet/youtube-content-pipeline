@@ -14,6 +14,10 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from src.api.dependencies import get_db
 from src.api.models.errors import ErrorCodes
+from src.api.models.requests import (
+    AddChannelsFromVideosRequest,
+    AddChannelsFromVideosResponse,
+)
 from src.api.security import validate_api_key
 from src.channel.resolver import resolve_channel_handle
 from src.channel.schemas import ChannelDocument
@@ -85,9 +89,7 @@ async def list_channels(
         if "_id" in doc:
             doc["_id"] = str(doc["_id"])
         # Get video count for this channel
-        video_count = await db.video_metadata.count_documents(
-            {"channel_id": doc.get("channel_id")}
-        )
+        video_count = await db.video_metadata.count_documents({"channel_id": doc.get("channel_id")})
         doc["video_count"] = video_count
         results.append(doc)
 
@@ -157,14 +159,10 @@ async def get_channel(
     # Get transcript stats
     # Get video IDs for this channel
     video_ids = []
-    async for video in db.video_metadata.find(
-        {"channel_id": channel_id}, {"video_id": 1}
-    ):
+    async for video in db.video_metadata.find({"channel_id": channel_id}, {"video_id": 1}):
         video_ids.append(video["video_id"])
 
-    transcript_count = await db.transcripts.count_documents(
-        {"video_id": {"$in": video_ids}}
-    )
+    transcript_count = await db.transcripts.count_documents({"video_id": {"$in": video_ids}})
     doc["transcript_count"] = transcript_count
 
     return doc
@@ -250,12 +248,7 @@ async def list_channel_videos(
     if transcript_status:
         query["transcript_status"] = transcript_status
 
-    cursor = (
-        db.video_metadata.find(query)
-        .sort("published_at", -1)
-        .skip(offset)
-        .limit(limit)
-    )
+    cursor = db.video_metadata.find(query).sort("published_at", -1).skip(offset).limit(limit)
 
     results = []
     async for doc in cursor:
@@ -423,3 +416,238 @@ async def sync_channel_endpoint(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Sync failed: {e}",
         )
+
+
+@router.post(
+    "/from-videos",
+    status_code=status.HTTP_200_OK,
+    response_model=AddChannelsFromVideosResponse,
+    summary="Add channels from video URLs",
+    description="""
+    Add YouTube channels from video URLs.
+
+    This endpoint extracts channel information from video URLs and adds
+    the channels to tracking. Optionally syncs videos from each channel.
+
+    **Features:**
+    - Extracts channel ID and handle from video URLs
+    - Skips duplicate URLs in the same batch
+    - Skips channels already being tracked
+    - Auto-syncs videos from new channels (configurable)
+    - Returns detailed summary of added, skipped, and failed channels
+
+    **Sync Modes:**
+    - `recent`: Fetch ~15 most recent videos via RSS (fast)
+    - `all`: Fetch all videos using yt-dlp (slower, thorough)
+    """,
+    operation_id="add_channels_from_videos",
+    responses={
+        200: {
+            "description": "Channels added successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "success": True,
+                        "added": [
+                            {
+                                "url": "https://youtu.be/abc123",
+                                "channel_id": "UC...",
+                                "channel_handle": "ChannelName",
+                                "channel_title": "Channel Name",
+                                "database_id": "507f1f77bcf86cd799439011",
+                                "sync_videos_fetched": 15,
+                                "sync_videos_new": 15,
+                            }
+                        ],
+                        "skipped_duplicate": [],
+                        "skipped_existing": [],
+                        "failed": [],
+                        "total_processed": 1,
+                        "total_added": 1,
+                        "total_skipped": 0,
+                        "total_failed": 0,
+                    }
+                }
+            },
+        },
+    },
+)
+async def add_channels_from_videos_endpoint(
+    request: AddChannelsFromVideosRequest,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    auth_ctx=Depends(validate_api_key),
+) -> AddChannelsFromVideosResponse:
+    """Add channels from YouTube video URLs.
+
+    Args:
+        request: Request with video URLs and sync options
+        db: Database dependency
+        auth_ctx: Authentication context (optional)
+
+    Returns:
+        AddChannelsFromVideosResponse with detailed results
+    """
+    import json
+    import subprocess
+
+    processed_channels: set[str] = set()
+    results = {
+        "added": [],
+        "skipped_duplicate": [],
+        "skipped_existing": [],
+        "failed": [],
+    }
+
+    def extract_video_id(url: str) -> str | None:
+        """Extract video ID from YouTube URL."""
+        import re
+
+        match = re.search(r"(?:v=|\.be/)([a-zA-Z0-9_-]{11})", url)
+        return match.group(1) if match else None
+
+    def get_channel_from_video(video_id: str) -> dict[str, str] | None:
+        """Get channel info from video ID using yt-dlp."""
+        from src.video.cookie_manager import YouTubeCookieManager
+
+        try:
+            # Ensure cookies are available
+            cookie_manager = YouTubeCookieManager(auto_extract=True)
+            cookie_manager.ensure_cookies()
+            cookie_args = cookie_manager.get_cookie_args()
+
+            cmd = [
+                "yt-dlp",
+                "--dump-json",
+                "--no-warnings",
+                "--quiet",
+            ]
+            cmd.extend(cookie_args)  # Add cookies if available
+            cmd.append(f"https://www.youtube.com/watch?v={video_id}")
+
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+            if result.returncode == 0 and result.stdout.strip():
+                data = json.loads(result.stdout.strip())
+                channel_id = data.get("channel_id")
+                channel_handle = data.get("channel", "") or data.get("uploader", "")
+
+                if channel_id:
+                    return {
+                        "channel_id": channel_id,
+                        "channel_handle": channel_handle,
+                    }
+
+            return None
+        except Exception:
+            return None
+
+    for url in request.video_urls:
+        video_id = extract_video_id(url)
+        if not video_id:
+            results["failed"].append({"url": url, "video_id": None, "error": "Invalid URL format"})
+            continue
+
+        channel_info = get_channel_from_video(video_id)
+        if not channel_info:
+            results["failed"].append(
+                {"url": url, "video_id": video_id, "error": "Could not fetch channel info"}
+            )
+            continue
+
+        channel_id = channel_info["channel_id"]
+        channel_handle = channel_info["channel_handle"]
+
+        # Check if already processed in this batch
+        if channel_id in processed_channels:
+            results["skipped_duplicate"].append(
+                {
+                    "url": url,
+                    "channel_id": channel_id,
+                    "channel_handle": channel_handle,
+                }
+            )
+            continue
+
+        # Check if channel already exists in database
+        existing_channel = await db.channels.find_one({"channel_id": channel_id})
+        if existing_channel:
+            results["skipped_existing"].append(
+                {
+                    "url": url,
+                    "channel_id": channel_id,
+                    "channel_handle": existing_channel.get("channel_handle"),
+                }
+            )
+            processed_channels.add(channel_id)
+            continue
+
+        try:
+            # Resolve channel handle to get proper channel URL
+            resolved_handle = f"@{channel_handle}".replace(" ", "").replace("-", "")
+            channel_id_resolved, channel_url = resolve_channel_handle(resolved_handle)
+
+            # Use resolved channel_id
+            channel_id = channel_id_resolved
+
+            # Check again with resolved ID
+            existing_channel = await db.channels.find_one({"channel_id": channel_id})
+            if existing_channel:
+                results["skipped_existing"].append(
+                    {
+                        "url": url,
+                        "channel_id": channel_id,
+                        "channel_handle": existing_channel.get("channel_handle"),
+                    }
+                )
+                processed_channels.add(channel_id)
+                continue
+
+            # Save channel to database
+            normalized_handle = channel_handle.replace(" ", "").replace("-", "")
+            channel_doc = ChannelDocument(
+                channel_id=channel_id,
+                channel_handle=normalized_handle,
+                channel_title=channel_handle,
+                channel_url=channel_url,
+            )
+
+            doc_id = await db.save_channel(channel_doc)
+
+            result_entry: dict[str, Any] = {
+                "url": url,
+                "channel_id": channel_id,
+                "channel_handle": normalized_handle,
+                "channel_title": channel_doc.channel_title,
+                "database_id": str(doc_id),
+            }
+
+            # Auto-sync if requested
+            if request.auto_sync:
+                try:
+                    sync_result = sync_channel(
+                        handle=f"@{normalized_handle}",
+                        mode=request.sync_mode,
+                        db_manager=None,
+                    )
+                    result_entry["sync_videos_fetched"] = sync_result.videos_fetched
+                    result_entry["sync_videos_new"] = sync_result.videos_new
+                except Exception as sync_error:
+                    result_entry["sync_error"] = str(sync_error)
+
+            results["added"].append(result_entry)
+            processed_channels.add(channel_id)
+
+        except Exception as e:
+            results["failed"].append({"url": url, "video_id": video_id, "error": str(e)})
+
+    return AddChannelsFromVideosResponse(
+        success=True,
+        added=results["added"],
+        skipped_duplicate=results["skipped_duplicate"],
+        skipped_existing=results["skipped_existing"],
+        failed=results["failed"],
+        total_processed=len(request.video_urls),
+        total_added=len(results["added"]),
+        total_skipped=len(results["skipped_duplicate"]) + len(results["skipped_existing"]),
+        total_failed=len(results["failed"]),
+    )

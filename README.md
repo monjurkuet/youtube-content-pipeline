@@ -87,6 +87,17 @@ uv run python -m src.cli transcribe "URL" --no-db
 # Add channel to tracking
 uv run python -m src.cli channel add @ChartChampions
 
+# Add channels from video URLs (extracts channel info automatically)
+uv run python -m src.cli channel add-from-videos \
+  "https://youtu.be/S9s1rZKO_18" \
+  "https://youtu.be/fpKtJLc5Ntg" \
+  --sync --sync-mode recent
+
+# Cookie management
+uv run python -m src.cli cookie status      # Check cookie status
+uv run python -m src.cli cookie extract      # Extract cookies from Chrome
+uv run python -m src.cli cookie invalidate    # Force re-extraction
+
 # Sync latest videos (RSS feed, ~15 videos, 2 seconds)
 uv run python -m src.cli channel sync @ChartChampions
 

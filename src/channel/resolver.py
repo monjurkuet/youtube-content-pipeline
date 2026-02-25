@@ -75,7 +75,14 @@ def _try_ytdlp(handle: str) -> str | None:
     import json
     import subprocess
 
+    from src.video.cookie_manager import YouTubeCookieManager
+
     channel_url = f"https://www.youtube.com/{handle}/videos"
+
+    # Ensure cookies are available
+    cookie_manager = YouTubeCookieManager(auto_extract=True)
+    cookie_manager.ensure_cookies()
+    cookie_args = cookie_manager.get_cookie_args()
 
     try:
         # Use yt-dlp to get channel info
@@ -87,8 +94,9 @@ def _try_ytdlp(handle: str) -> str | None:
             "--dump-json",
             "--no-warnings",
             "--quiet",
-            channel_url,
         ]
+        cmd.extend(cookie_args)  # Add cookies if available
+        cmd.append(channel_url)
 
         result = subprocess.run(
             cmd,

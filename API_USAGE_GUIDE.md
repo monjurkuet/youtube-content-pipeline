@@ -414,6 +414,59 @@ Sync videos from a tracked channel.
 
 ---
 
+#### Add Channels from Video URLs
+
+**Endpoint**: `POST /api/v1/channels/from-videos`
+
+Add YouTube channels from video URLs. Extracts channel information from video URLs and adds channels to tracking.
+
+**Request Body**:
+
+```json
+{
+  "video_urls": [
+    "https://youtu.be/S9s1rZKO_18",
+    "https://youtu.be/fpKtJLc5Ntg"
+  ],
+  "auto_sync": true,
+  "sync_mode": "recent"
+}
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `video_urls` | array[string] | Required | List of YouTube video URLs |
+| `auto_sync` | boolean | true | Whether to sync channel videos after adding |
+| `sync_mode` | string | "recent" | Sync mode: "recent" (~15 videos) or "all" (all videos) |
+
+**Response** (200 OK):
+
+```json
+{
+  "success": true,
+  "added": [
+    {
+      "url": "https://youtu.be/S9s1rZKO_18",
+      "channel_id": "UCQ8uPiIzRVwWRUSbzCZH0dA",
+      "channel_handle": "DorianAIOFM",
+      "channel_title": "Dorian AI OFM",
+      "database_id": "507f1f77bcf86cd799439011",
+      "sync_videos_fetched": 15,
+      "sync_videos_new": 15
+    }
+  ],
+  "skipped_duplicate": [],
+  "skipped_existing": [],
+  "failed": [],
+  "total_processed": 2,
+  "total_added": 1,
+  "total_skipped": 0,
+  "total_failed": 0
+}
+```
+
+---
+
 ### Stats Endpoint
 
 #### Get System Statistics

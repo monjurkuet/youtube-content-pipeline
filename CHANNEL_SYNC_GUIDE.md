@@ -2,6 +2,30 @@
 
 ## 🚀 Quick Start: Complete Workflow
 
+### **Add Channels from Video URLs**
+
+If you have YouTube video URLs and want to add the channel:
+
+```bash
+# Add channels from video URLs (auto-syncs after adding)
+uv run python -m src.cli channel add-from-videos \
+  "https://youtu.be/S9s1rZKO_18" \
+  "https://youtu.be/fpKtJLc5Ntg" \
+  --sync --sync-mode recent
+```
+
+Options:
+- `--sync/--no-sync`: Auto-sync videos after adding (default: sync)
+- `--sync-mode recent`: Fetch ~15 recent videos via RSS
+- `--sync-mode all`: Fetch all videos using yt-dlp
+
+### **Add Channels from Handles**
+
+```bash
+# Add channel to tracking
+uv run python -m src.cli channel add @ChartChampions
+```
+
 ### **Transcribe All Videos - Command Options**
 
 | Command | Description | Best For |
@@ -424,7 +448,7 @@ If you encounter IP blocking:
 3. **Wait and retry**: Take a break and try again later
 4. **Check cookies**: Ensure you're logged into YouTube in Chrome
    ```bash
-   uv run python -m src.video.cookie_manager --status
+   uv run python -m src.cli cookie status
    ```
 ```
 
