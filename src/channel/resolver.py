@@ -15,7 +15,8 @@ def resolve_channel_handle(handle: str) -> tuple[str, str]:
     Resolve YouTube channel handle to channel ID and URL.
 
     Args:
-        handle: Channel handle (e.g., "@ChartChampions" or "https://www.youtube.com/@ChartChampions")
+        handle: Channel handle (e.g., "@ChartChampions"), channel ID (e.g., "UCKBURc62w9crMI1BhzHRnvw"),
+                or full URL (e.g., "https://www.youtube.com/@ChartChampions")
 
     Returns:
         Tuple of (channel_id, channel_url)
@@ -37,24 +38,44 @@ def resolve_channel_handle(handle: str) -> tuple[str, str]:
                 return channel_id, channel_url
             raise ValueError(f"Could not extract handle from URL: {handle}")
 
+    # Check if it's already a channel ID (starts with "UC" and is 24 chars)
+    # YouTube channel IDs start with "UC" and are exactly 24 characters
+    if handle.startswith("UC") and len(handle) == 24:
+        channel_id = handle
+        channel_url = f"https://www.youtube.com/channel/{channel_id}"
+        console.print(f"[green]✓ Using channel ID directly: {channel_id}[/green]")
+        return channel_id, channel_url
+
+    # Remove @ prefix if present to check raw handle
+    raw_handle = handle.lstrip("@")
+
+    # Check if raw handle looks like a channel ID
+    if raw_handle.startswith("UC") and len(raw_handle) == 24:
+        channel_id = raw_handle
+        channel_url = f"https://www.youtube.com/channel/{channel_id}"
+        console.print(f"[green]✓ Using channel ID directly: {channel_id}[/green]")
+        return channel_id, channel_url
+
     # Ensure handle starts with @
     if not handle.startswith("@"):
         handle = "@" + handle
 
     console.print(f"[dim]Resolving channel handle: {handle}...[/dim]")
 
-    # Method 1: Try RSS feed (fastest, most reliable)
-    channel_id = _try_rss_feed(handle)
+    # Try the @handle format first
+    channel_id = _try_ytdlp(handle)
     if channel_id:
         channel_url = f"https://www.youtube.com/channel/{channel_id}"
         console.print(f"[green]✓ Resolved to channel ID: {channel_id}[/green]")
         return channel_id, channel_url
 
-    # Method 2: Try yt-dlp
-    channel_id = _try_ytdlp(handle)
+    # Fallback: Try as custom URL (some channels use custom URLs that look like handles)
+    # e.g., @Mickmumpitz might be a custom URL, not a handle
+    custom_url = f"https://www.youtube.com/{handle}/videos"
+    channel_id = _extract_channel_id_from_page(custom_url)
     if channel_id:
         channel_url = f"https://www.youtube.com/channel/{channel_id}"
-        console.print(f"[green]✓ Resolved to channel ID: {channel_id}[/green]")
+        console.print(f"[green]✓ Resolved custom URL to channel ID: {channel_id}[/green]")
         return channel_id, channel_url
 
     raise ValueError(
@@ -109,7 +130,10 @@ def _try_ytdlp(handle: str) -> str | None:
             # Parse JSON output
             try:
                 data = json.loads(result.stdout.strip())
-                channel_id = data.get("channel_id")
+                # Try multiple fields for channel ID
+                channel_id = (
+                    data.get("channel_id") or data.get("playlist_channel_id") or data.get("channel")
+                )
                 if channel_id:
                     return channel_id
             except json.JSONDecodeError:
