@@ -146,13 +146,10 @@ class TranscriptPipeline:
         async def _save() -> str:
             from src.database import MongoDBManager
 
-            # Create fresh DB manager to avoid event loop conflicts
-            db = MongoDBManager()
-            try:
+            # Use context manager for proper lifecycle management
+            async with MongoDBManager() as db:
                 doc_id = await db.save_transcript(transcript_doc)
                 return doc_id
-            finally:
-                db.client.close()
 
         def _run_in_thread() -> str:
             # Each thread gets its own event loop with asyncio.run()

@@ -2,9 +2,10 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 import yaml
-from pydantic_settings import BaseSettings, SettingsConfigDict  # type: ignore[attr-defined]
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -19,6 +20,26 @@ class Settings(BaseSettings):
     # MongoDB
     mongodb_url: str = "mongodb://localhost:27017"
     mongodb_database: str = "video_pipeline"
+
+    # Redis
+    redis_url: str = "redis://localhost:6379"
+    redis_db: int = 0
+    redis_key_prefix: str = "transcription"
+    redis_enabled: bool = True
+
+    # Authentication
+    auth_api_keys: list[str] = []  # Loaded from env var API_KEYS (comma-separated)
+    auth_default_rate_limit_tier: str = "free"
+    auth_require_key: bool = False  # Set True to require auth for all endpoints
+
+    # Rate Limiting
+    rate_limit_enabled: bool = True
+    rate_limit_storage: str = "redis"  # "redis" or "memory"
+    rate_limit_default_tier: str = "free"
+
+    # Prometheus
+    prometheus_enabled: bool = True
+    prometheus_path: str = "/metrics"
 
     # Audio Processing
     audio_format: str = "mp3"
@@ -53,6 +74,13 @@ class Settings(BaseSettings):
     batch_default_size: int = 5
     batch_show_progress: bool = True
 
+    # Rate Limit Tiers (requests per minute)
+    rate_limit_tiers: dict[str, int] = {
+        "free": 10,
+        "pro": 100,
+        "enterprise": 1000,
+    }
+
     # Convenience properties
     @property
     def work_dir(self) -> Path:
@@ -69,6 +97,35 @@ class Settings(BaseSettings):
         """Get rate limiting delay range as tuple."""
         return (self.rate_limiting_min_delay, self.rate_limiting_max_delay)
 
+    @property
+    def parsed_api_keys(self) -> list[str]:
+        """Parse API keys from environment variable.
+
+        Supports:
+        - Comma-separated list: "key1,key2,key3"
+        - Single key: "key1"
+        - Empty: []
+
+        Returns:
+            List of API keys
+        """
+        if self.auth_api_keys:
+            return self.auth_api_keys
+
+        # Try to load from environment
+        import os
+
+        keys_env = os.getenv("API_KEYS", "")
+        if keys_env:
+            return [k.strip() for k in keys_env.split(",") if k.strip()]
+
+        # Fallback to single API_KEY env var
+        single_key = os.getenv("API_KEY", "")
+        if single_key:
+            return [single_key]
+
+        return []
+
 
 @lru_cache
 def get_settings() -> Settings:
@@ -76,7 +133,7 @@ def get_settings() -> Settings:
     return Settings()
 
 
-def load_yaml_config(config_path: Path | str | None = None) -> dict:
+def load_yaml_config(config_path: Path | str | None = None) -> dict[str, Any]:
     """
     Load configuration from YAML file.
 
@@ -86,6 +143,7 @@ def load_yaml_config(config_path: Path | str | None = None) -> dict:
     Returns:
         Dictionary with configuration values
     """
+
     if config_path is None:
         # Try default locations
         possible_paths = [
@@ -103,14 +161,14 @@ def load_yaml_config(config_path: Path | str | None = None) -> dict:
         return {}
 
     try:
-        with open(config_path, "r") as f:
+        with open(config_path) as f:
             return yaml.safe_load(f) or {}
     except Exception as e:
         print(f"Warning: Failed to load config file: {e}")
         return {}
 
 
-def apply_yaml_config(settings: Settings, config: dict) -> Settings:
+def apply_yaml_config(settings: Settings, config: dict[str, Any]) -> Settings:
     """
     Apply YAML configuration to settings object.
 

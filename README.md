@@ -1,9 +1,10 @@
 # YouTube Transcription Pipeline
 
-A simple, robust pipeline for transcribing YouTube videos and saving transcripts to MongoDB. Features automatic cookie management, Whisper fallback, REST API, and **channel tracking**.
+A production-grade API for YouTube video transcription and transcript management. Features automatic cookie management, Whisper fallback, REST API with authentication, rate limiting, Prometheus metrics, MCP integration, and **channel tracking**.
 
 ## Features
 
+### Core Features
 - **Simple 2-Step Pipeline**: Get transcript → Save to MongoDB
 - **Automatic Fallback**: YouTube API → Whisper transcription
 - **Auto Cookie Management**: Extracts cookies from Chrome automatically
@@ -11,8 +12,24 @@ A simple, robust pipeline for transcribing YouTube videos and saving transcripts
 - **Retry Logic**: Exponential backoff for rate-limited requests
 - **YouTube API Cookie Support**: Passes browser cookies to API for less detectable requests
 - **OpenVINO Whisper**: Optimized transcription with GPU/CPU support
+
+### API Features
 - **REST API**: FastAPI endpoints for async transcription jobs
+- **OpenAPI Documentation**: Interactive docs at `/docs` and `/redoc`
+- **API Key Authentication**: Optional authentication with tiered access
+- **Rate Limiting**: Per-key rate limiting with Redis backend
+- **Health Checks**: Comprehensive health endpoints for monitoring
+- **Prometheus Metrics**: Detailed metrics for monitoring and alerting
+
+### AI Integration
+- **MCP Server**: Model Context Protocol support for AI assistants
+- **Tools**: Transcribe, search, and manage transcripts via AI
+- **Resources**: Direct access to transcripts and job status
+- **Prompts**: Pre-defined workflows for common tasks
+
+### Data Management
 - **MongoDB Storage**: Full transcripts with timestamps
+- **Redis Cache**: Job queue and caching (optional)
 - **Channel Tracking**: Track YouTube channels and sync all videos with metadata
 - **YAML Configuration**: Centralized config file for all settings
 
@@ -32,8 +49,19 @@ uv sync
 - Python 3.12+
 - FFmpeg (for audio processing)
 - MongoDB (optional, for data storage)
+- Redis (optional, for caching and rate limiting)
 - Chrome browser (for cookie extraction)
 - Node.js or Deno (for YouTube JS challenges)
+
+### Optional Dependencies
+
+```bash
+# With Redis support
+uv sync --extra redis
+
+# With all extras
+uv sync --all-extras
+```
 
 ## Quick Start
 
@@ -135,20 +163,78 @@ uv run python -m src.cli batch sources.txt
 ### Start the API Server
 
 ```bash
+# Basic server
 uv run uvicorn src.api.main:app --reload
+
+# With Prometheus metrics
+uv run uvicorn src.api.main:app --reload --host 0.0.0.0
+
+# Production (with workers)
+uv run uvicorn src.api.main:app --workers 4 --host 0.0.0.0 --port 8000
 ```
 
-API endpoints:
-- `POST /api/v1/videos/transcribe` - Submit video for transcription
-- `GET /api/v1/videos/jobs/{job_id}` - Check job status
-- `GET /api/v1/transcripts/{video_id}` - Get transcript
-- `GET /api/v1/transcripts/` - List transcripts
-- `POST /api/v1/channels/` - Add channel to tracking
-- `GET /api/v1/channels/` - List tracked channels
-- `POST /api/v1/channels/{channel_id}/sync` - Trigger channel sync
-- `GET /api/v1/channels/{channel_id}/videos` - Get channel videos
+### API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/v1/videos/transcribe` | Submit video for transcription |
+| `POST` | `/api/v1/videos/batch-transcribe` | Batch transcription (up to 100 videos) |
+| `GET` | `/api/v1/videos/jobs/{job_id}` | Check job status |
+| `GET` | `/api/v1/videos/jobs` | List transcription jobs |
+| `GET` | `/api/v1/transcripts/{video_id}` | Get transcript |
+| `GET` | `/api/v1/transcripts/` | List transcripts |
+| `DELETE` | `/api/v1/transcripts/{video_id}` | Delete transcript |
+| `GET` | `/api/v1/channels/` | List tracked channels |
+| `GET` | `/api/v1/channels/{channel_id}` | Get channel details |
+| `DELETE` | `/api/v1/channels/{channel_id}` | Remove channel from tracking |
+| `POST` | `/api/v1/channels/{channel_id}/sync` | Trigger channel sync |
+| `GET` | `/api/v1/channels/{channel_id}/videos` | Get channel videos |
+| `GET` | `/api/v1/stats/` | Get system statistics |
+| `GET` | `/health` | Basic health check |
+| `GET` | `/health/ready` | Readiness probe |
+| `GET` | `/health/detailed` | Detailed health status |
+| `GET` | `/metrics` | Prometheus metrics |
+
+### API Documentation
+
+Interactive API documentation is available at:
+
+- **Swagger UI**: http://localhost:8000/docs
+- **ReDoc**: http://localhost:8000/redoc
+- **OpenAPI Spec**: http://localhost:8000/openapi.json
+
+See [API_USAGE_GUIDE.md](API_USAGE_GUIDE.md) for detailed usage examples.
 
 ## Configuration
+
+### Environment Variables
+
+Create a `.env` file in the project root:
+
+```bash
+# MongoDB
+MONGODB_URL=mongodb://localhost:27017
+MONGODB_DATABASE=video_pipeline
+
+# Redis (optional)
+REDIS_URL=redis://localhost:6379
+REDIS_ENABLED=true
+
+# API Authentication (optional)
+API_KEYS=key1,key2,key3
+AUTH_REQUIRE_KEY=false
+
+# OpenVINO Whisper
+OPENVINO_WHISPER_MODEL=openai/whisper-base
+OPENVINO_DEVICE=AUTO
+OPENVINO_CACHE_DIR=~/.cache/whisper_openvino
+
+# Prometheus
+PROMETHEUS_ENABLED=true
+PROMETHEUS_PATH=/metrics
+```
+
+See [CONFIGURATION_REFERENCE.md](CONFIGURATION_REFERENCE.md) for complete configuration options.
 
 ### YAML Configuration (Recommended)
 
@@ -206,7 +292,83 @@ OPENVINO_DEVICE=AUTO  # AUTO, GPU, or CPU
 OPENVINO_CACHE_DIR=~/.cache/whisper_openvino
 ```
 
+## MCP Integration
+
+The pipeline includes an MCP (Model Context Protocol) server for AI assistant integration.
+
+### Running the MCP Server
+
+```bash
+uv run python -m src.mcp.server
+```
+
+### Claude Desktop Configuration
+
+Add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "youtube-transcription": {
+      "command": "uv",
+      "args": ["run", "python", "-m", "src.mcp.server"],
+      "cwd": "/home/muham/development/youtube-content-pipeline"
+    }
+  }
+}
+```
+
+### Available Tools
+
+- `transcribe_video` - Transcribe a YouTube video
+- `get_transcript` - Retrieve a transcript by video ID
+- `list_transcripts` - List all transcripts
+- `get_job_status` - Check job status
+- `add_channel` - Add channel to tracking
+- `list_channels` - List all tracked channels
+- `remove_channel` - Remove channel from tracking
+- `sync_channel` - Sync channel videos
+- `list_channel_videos` - List videos for a channel
+- `transcribe_channel_pending` - Transcribe pending videos
+
+See [MCP_INTEGRATION_GUIDE.md](MCP_INTEGRATION_GUIDE.md) for detailed setup.
+
+---
+
+## Monitoring
+
+### Prometheus Metrics
+
+Metrics are exposed at `/metrics`:
+
+- API request rates and latency
+- Transcription job metrics
+- Database operation metrics
+- Redis operation metrics
+
+### Health Checks
+
+| Endpoint | Description |
+|----------|-------------|
+| `/health` | Basic liveness probe |
+| `/health/ready` | Readiness probe (checks dependencies) |
+| `/health/detailed` | Comprehensive health status |
+
+### Grafana Dashboard
+
+Set up Prometheus and Grafana for monitoring:
+
+```bash
+# See Prometheus WSL setup guide
+```
+
+See [PROMETHEUS_WSL_SETUP.md](PROMETHEUS_WSL_SETUP.md) for complete monitoring setup.
+
+---
+
 ## Architecture
+
+### Pipeline Architecture
 
 ```
 YouTube URL / Local Video
@@ -217,6 +379,38 @@ Step 1: Get Transcript
     |
 Step 2: Save to MongoDB
     └── Full transcript with timestamps
+```
+
+### API Architecture
+
+```
+Client Request
+    |
+Rate Limiter (Redis/Memory)
+    |
+API Key Authentication (optional)
+    |
+FastAPI Router
+    |
+├── Videos Router → Transcription Job
+├── Transcripts Router → MongoDB
+└── Health Router → Component Checks
+    |
+Prometheus Metrics (all requests)
+```
+
+### MCP Architecture
+
+```
+AI Assistant (Claude, etc.)
+    |
+MCP Protocol (STDIO/SSE)
+    |
+MCP Server (FastMCP)
+    |
+├── Tools → Transcription API
+├── Resources → MongoDB
+└── Prompts → Workflow Templates
 ```
 
 ## Channel Tracking Architecture
@@ -281,23 +475,53 @@ src/
 │   └── schemas.py             # Channel/Video schemas
 ├── api/
 │   ├── main.py                # FastAPI app
+│   ├── app.py                 # App factory
 │   ├── dependencies.py        # FastAPI dependencies
+│   ├── security.py            # API key authentication
+│   ├── middleware/
+│   │   ├── prometheus.py      # Prometheus metrics
+│   │   ├── rate_limiter.py    # Rate limiting
+│   │   ├── error_handler.py   # Error handling
+│   │   └── logging.py         # Request logging
 │   ├── routers/
 │   │   ├── videos.py          # Transcription endpoints
-│   │   └── transcripts.py    # Transcript retrieval
+│   │   ├── transcripts.py     # Transcript retrieval
+│   │   ├── channels.py        # Channel management
+│   │   ├── stats.py           # Statistics endpoint
+│   │   └── health.py          # Health checks
 │   └── models/
-│       └── requests.py        # Pydantic models
+│       ├── requests.py        # Request models
+│       └── errors.py          # Error models
 ├── core/
 │   ├── config.py              # Configuration settings
+│   ├── constants.py           # Application constants
 │   ├── exceptions.py          # Custom exceptions
-│   └── schemas.py             # Pydantic models
+│   ├── schemas.py             # Pydantic models
+│   └── logging_config.py      # Logging configuration
 ├── pipeline/
-│   └── transcript.py         # Main pipeline
+│   └── transcript.py          # Main pipeline
 ├── transcription/
-│   ├── handler.py            # Transcription with fallback
-│   └── whisper_openvino.py   # OpenVINO Whisper
-└── video/
-    └── cookie_manager.py     # Browser cookie management
+│   ├── handler.py             # Transcription with fallback
+│   └── whisper_openvino.py    # OpenVINO Whisper
+├── video/
+│   └── cookie_manager.py      # Browser cookie management
+├── database/
+│   ├── manager.py             # Database manager
+│   ├── models.py              # Database models
+│   └── redis.py               # Redis integration
+└── mcp/
+    ├── server.py              # MCP server
+    ├── config.py              # MCP configuration
+    ├── tools/
+    │   ├── transcription.py   # Transcription tools
+    │   ├── transcripts.py     # Transcript tools
+    │   └── channels.py        # Channel tools
+    ├── resources/
+    │   ├── transcripts.py     # Transcript resources
+    │   └── jobs.py            # Job resources
+    └── prompts/
+        ├── transcribe.py      # Transcription prompts
+        └── channel_sync.py    # Channel sync prompts
 ```
 
 ## Programmatic API
@@ -387,9 +611,153 @@ uv run pytest tests/test_pipeline.py -v
 
 ## Documentation
 
-- `README.md` - This file (overview and quick start)
-- `CHANNEL_SYNC_GUIDE.md` - Detailed channel sync strategies and workflows
-- `AGENTS.md` - Development guidelines and architecture notes
+| Document | Description |
+|----------|-------------|
+| [README.md](README.md) | Overview and quick start |
+| [API_USAGE_GUIDE.md](API_USAGE_GUIDE.md) | Complete API usage with examples |
+| [MCP_INTEGRATION_GUIDE.md](MCP_INTEGRATION_GUIDE.md) | MCP server setup and usage |
+| [PROMETHEUS_WSL_SETUP.md](PROMETHEUS_WSL_SETUP.md) | Prometheus and Grafana setup |
+| [CONFIGURATION_REFERENCE.md](CONFIGURATION_REFERENCE.md) | All configuration options |
+| [CHANNEL_SYNC_GUIDE.md](CHANNEL_SYNC_GUIDE.md) | Channel sync strategies |
+| [AGENTS.md](AGENTS.md) | Development guidelines |
+| [INTEL_ARC_GPU_GUIDE.md](INTEL_ARC_GPU_GUIDE.md) | Intel Arc GPU setup |
+
+### Interactive Documentation
+
+- **Swagger UI**: http://localhost:8000/docs
+- **ReDoc**: http://localhost:8000/redoc
+- **OpenAPI Spec**: http://localhost:8000/openapi.json
+
+## Production Deployment
+
+### Docker Deployment
+
+```dockerfile
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install dependencies
+RUN pip install uv
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen
+
+# Copy application
+COPY src/ ./src/
+COPY config.yaml ./
+
+# Set environment variables
+ENV PYTHONPATH=/app
+ENV MONGODB_URL=mongodb://mongo:27017
+ENV REDIS_URL=redis://redis:6379
+
+# Run application
+CMD ["uv", "run", "uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+### Docker Compose
+
+```yaml
+version: '3.8'
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGODB_URL=mongodb://mongo:27017
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - mongo
+      - redis
+
+  mongo:
+    image: mongo:7
+    volumes:
+      - mongo_data:/data/db
+
+  redis:
+    image: redis:7
+    volumes:
+      - redis_data:/data
+
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:10.1.0
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+
+volumes:
+  mongo_data:
+  redis_data:
+```
+
+### Kubernetes (Basic)
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transcription-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: transcription-api
+  template:
+    metadata:
+      labels:
+        app: transcription-api
+    spec:
+      containers:
+      - name: api
+        image: transcription-api:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: MONGODB_URL
+          valueFrom:
+            secretKeyRef:
+              name: mongo-secret
+              key: url
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: redis-secret
+              key: url
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 20
+```
+
+### Security Considerations
+
+1. **API Keys**: Use strong, unique API keys. Rotate regularly.
+2. **HTTPS**: Always use HTTPS in production.
+3. **Rate Limiting**: Enable rate limiting to prevent abuse.
+4. **Database**: Use authentication and TLS for MongoDB/Redis.
+5. **Secrets**: Store secrets in environment variables or secret manager.
+6. **Monitoring**: Enable Prometheus metrics and set up alerts.
+
+---
 
 ## License
 

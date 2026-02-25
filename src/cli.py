@@ -10,6 +10,7 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
+from src.core.logging_config import get_logger, setup_logging
 from src.core.schemas import ProcessingResult
 from src.pipeline import get_transcript
 
@@ -17,6 +18,21 @@ app = typer.Typer(help="Transcription Pipeline - Get transcripts and save to DB"
 channel_app = typer.Typer(help="Channel tracking commands")
 app.add_typer(channel_app, name="channel")
 console = Console()
+log = get_logger("cli")
+
+
+@app.callback()
+def main_callback(
+    verbose: bool = typer.Option(False, "-v", "--verbose", help="Enable verbose logging"),
+    log_file: Path | None = typer.Option(None, help="Log file path"),
+):
+    """
+    Transcription Pipeline - Get transcripts and save to DB.
+
+    Set up logging configuration before running commands.
+    """
+    level = "DEBUG" if verbose else "INFO"
+    setup_logging(level=level, log_file=log_file)
 
 
 @app.command()
@@ -37,8 +53,16 @@ def transcribe(
     2. Save to MongoDB
     """
     try:
+        log.info(f"📝 Starting transcription: {source[:50]}...")
+
         # Run transcription
         result = get_transcript(source, work_dir, save_to_db=not no_db)
+
+        # Log result
+        log.info(
+            f"✅ Transcription complete: {result.video_id} "
+            f"(source={result.transcript_source}, segments={result.segment_count})"
+        )
 
         # Display results
         _display_summary(result)
@@ -52,6 +76,7 @@ def transcribe(
             with open(output_path, "w") as f:
                 json.dump(result.model_dump_for_mongo(), f, indent=2, default=str)
             rprint(f"\n[green]✓ Results saved to: {output_path}[/green]")
+            log.info(f"💾 Results saved to file: {output_path}")
 
         # Print JSON to stdout
         if not verbose:
@@ -59,6 +84,7 @@ def transcribe(
             console.print_json(json.dumps(result.model_dump_for_mongo(), default=str))
 
     except Exception as e:
+        log.error(f"❌ Transcription failed: {source[:50]}... - {str(e)[:100]}")
         rprint(f"[red]✗ Error: {escape(str(e))}[/red]")
         raise typer.Exit(1) from e
 
@@ -172,10 +198,11 @@ def channel_add(
     handle: str = typer.Argument(..., help="Channel handle (e.g., @ChartChampions)"),
 ):
     """Add a YouTube channel to tracking."""
-    from src.channel import resolve_channel_handle
-    from src.database import get_db_manager
-    from src.channel.schemas import ChannelDocument
     import asyncio
+
+    from src.channel import resolve_channel_handle
+    from src.channel.schemas import ChannelDocument
+    from src.database import get_db_manager
 
     try:
         rprint(f"\n[bold blue]Adding channel: {handle}[/bold blue]\n")
@@ -197,7 +224,7 @@ def channel_add(
 
         doc_id = asyncio.run(_save())
 
-        rprint(f"[green]✓ Channel added successfully![/green]")
+        rprint("[green]✓ Channel added successfully![/green]")
         rprint(f"   Channel ID: {channel_id}")
         rprint(f"   Handle: @{channel_doc.channel_handle}")
         rprint(f"   URL: {channel_url}")
@@ -211,8 +238,9 @@ def channel_add(
 @channel_app.command("list")
 def channel_list():
     """List all tracked channels."""
-    from src.database import get_db_manager
     import asyncio
+
+    from src.database import get_db_manager
 
     try:
         db = get_db_manager()
@@ -281,11 +309,17 @@ def channel_sync(
             rprint("[yellow]Note: --incremental requires --all, enabling it[/yellow]\n")
             mode = "all"
 
+        log.info(f"🔄 Starting channel sync: {handle} (mode={mode})")
         rprint(f"\n[bold blue]Syncing channel: {handle} (mode: {mode})[/bold blue]\n")
 
         result = sync_channel(handle, mode=mode, max_videos=max_videos, incremental=incremental)
 
-        rprint(f"\n[green]✓ Sync complete![/green]")
+        log.info(
+            f"✅ Channel sync complete: @{result.channel_handle} "
+            f"({result.videos_fetched} videos, {result.videos_new} new)"
+        )
+
+        rprint("\n[green]✓ Sync complete![/green]")
         rprint(f"   Channel: @{result.channel_handle}")
         rprint(f"   Videos fetched: {result.videos_fetched}")
         rprint(f"   New videos: {result.videos_new}")
@@ -293,6 +327,7 @@ def channel_sync(
         rprint(f"   Mode: {result.sync_mode}\n")
 
     except Exception as e:
+        log.error(f"❌ Channel sync failed: {handle} - {str(e)[:100]}")
         rprint(f"[red]✗ Error: {escape(str(e))}[/red]")
         raise typer.Exit(1) from e
 
@@ -306,8 +341,9 @@ def channel_videos(
     ),
 ):
     """List videos from a tracked channel."""
-    from src.database import get_db_manager
     import asyncio
+
+    from src.database import get_db_manager
 
     try:
         # Get channel and videos in a single async context
@@ -415,13 +451,13 @@ def channel_transcribe_pending(
     Videos are processed sequentially with rate limiting delays.
     Use --all to transcribe all pending videos.
     """
-    from src.channel import resolve_channel_handle, get_pending_videos, mark_video_transcribed
-    from src.pipeline import get_transcript
-    from src.database import get_db_manager
-    from src.core.config import get_settings_with_yaml
     import asyncio
-    import subprocess
     import json
+    import subprocess
+
+    from src.channel import get_pending_videos, resolve_channel_handle
+    from src.core.config import get_settings_with_yaml
+    from src.pipeline import get_transcript
 
     # Load settings from config.yaml
     settings = get_settings_with_yaml()
@@ -441,15 +477,16 @@ def channel_transcribe_pending(
             Tuple of (is_available, reason)
         """
         try:
+            # Use --flat-playlist for faster metadata-only check
             cmd = [
                 "yt-dlp",
-                "--simulate",
+                "--flat-playlist",
                 "--dump-json",
                 "--no-warnings",
                 "--quiet",
                 f"https://www.youtube.com/watch?v={video_id}",
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
 
             # Check stderr for errors (yt-dlp reports errors there)
             if result.returncode != 0:
@@ -482,12 +519,9 @@ def channel_transcribe_pending(
             if availability in ["private", "unavailable"]:
                 return False, f"Video {availability}"
 
-            # Check for basic metadata (if we have title and upload_date, it's likely playable)
+            # Check for basic metadata (if we have title, it's likely playable)
             if not data.get("title"):
                 return False, "Missing video title"
-
-            # Note: 'url' is None in --simulate mode even for playable videos
-            # We only check for explicit error conditions above
 
             return True, "Available"
 
@@ -518,13 +552,13 @@ def channel_transcribe_pending(
         # Determine how many to process
         if all_videos:
             num_to_process = len(pending)
-            rprint(
-                f"[yellow]⚠ Processing ALL {len(pending)} pending videos (this may take a while)[/yellow]"
-            )
+            msg = f"[yellow]⚠ Processing ALL {len(pending)} pending videos"
+            msg += " (this may take a while)[/yellow]"
+            rprint(msg)
             if batch_size < len(pending):
                 rprint(f"[dim]Processing in batches of {batch_size}[/dim]\n")
             else:
-                rprint(f"[dim]Processing all at once[/dim]\n")
+                rprint("[dim]Processing all at once[/dim]\n")
         else:
             num_to_process = min(batch_size, len(pending))
             rprint(f"[dim]Processing {num_to_process} video(s) (use --all to process all)[/dim]\n")
@@ -535,9 +569,6 @@ def channel_transcribe_pending(
         failures = 0
         skipped = 0
 
-        # Use single event loop
-        # Create fresh DB manager for each operation to avoid Motor event loop issues
-        import concurrent.futures
         from src.database import MongoDBManager
 
         async def process_all():
@@ -546,7 +577,8 @@ def channel_transcribe_pending(
             for i, video in enumerate(pending[:num_to_process], 1):
                 rprint(f"[dim]{i}/{num_to_process}[/dim] {video.title[:50]}...")
 
-                # Apply rate limiting delay between videos (in addition to handler's internal rate limiting)
+                # Apply rate limiting delay between videos
+                # (in addition to handler's internal rate limiting)
                 if i > 1 and settings.rate_limiting_enabled:
                     import random
 
@@ -557,74 +589,66 @@ def channel_transcribe_pending(
                     await asyncio.sleep(delay)
 
                 # Check video availability first
-                rprint(f"  [dim]Checking availability...[/dim]")
+                rprint("  [dim]Checking availability...[/dim]")
                 is_available, reason = check_video_availability(video.video_id)
 
                 if not is_available:
                     rprint(f"  [yellow]⊘ Skipped: {reason}[/yellow]")
                     skipped += 1
 
-                    # Mark as failed with reason (fresh DB manager)
-                    db = MongoDBManager()
-                    try:
+                    # Mark as failed with reason using context manager
+                    async with MongoDBManager() as db:
                         await db.mark_transcript_failed(video.video_id, reason)
-                    finally:
-                        db.client.close()
                     continue
 
                 try:
                     # Transcribe video synchronously (OpenVINO is not thread-safe)
-                    rprint(f"  [dim]Starting transcription...[/dim]")
+                    rprint("  [dim]Starting transcription...[/dim]")
                     video_url = f"https://www.youtube.com/watch?v={video.video_id}"
 
                     # Run transcription synchronously - OpenVINO Whisper crashes in threads
                     # due to longjmp/setjmp stack frame issues
-                    result = get_transcript(video_url, save_to_db=True)
+                    get_transcript(video_url, save_to_db=True)
 
-                    # Get transcript ID and mark as completed (fresh DB manager)
+                    # Get transcript ID and mark as completed using context manager
                     # Add retry logic in case DB write hasn't completed yet
-                    db = MongoDBManager()
-                    try:
-                        transcript = None
-                        max_retries = 3
-                        for attempt in range(max_retries):
+                    transcript = None
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        async with MongoDBManager() as db:
                             transcript = await db.get_transcript(video.video_id)
-                            if transcript:
-                                break
-                            if attempt < max_retries - 1:
-                                rprint(
-                                    f"  [dim]   Waiting for DB write to complete (attempt {attempt + 1}/{max_retries})...[/dim]"
-                                )
-                                await asyncio.sleep(0.5 * (attempt + 1))
-
                         if transcript:
+                            break
+                        if attempt < max_retries - 1:
+                            msg = "  [dim]   Waiting for DB write to complete "
+                            msg += f"(attempt {attempt + 1}/{max_retries})...[/dim]"
+                            rprint(msg)
+                            await asyncio.sleep(0.5 * (attempt + 1))
+
+                    if transcript:
+                        async with MongoDBManager() as db:
                             await db.mark_transcript_completed(video.video_id, transcript["_id"])
-                            rprint(f"  [green]✓ Transcribed and marked complete[/green]")
-                            successes += 1
-                        else:
-                            rprint(
-                                f"  [yellow]⚠ Transcribed but transcript not found in DB after {max_retries} attempts[/yellow]"
-                            )
-                            successes += 1
-                    finally:
-                        db.client.close()
+                        rprint("  [green]✓ Transcribed and marked complete[/green]")
+                        successes += 1
+                    else:
+                        msg = "  [yellow]⚠ Transcribed but transcript not found "
+                        msg += f"in DB after {max_retries} attempts[/yellow]"
+                        rprint(msg)
+                        successes += 1
 
                 except Exception as e:
                     error_msg = str(e)[:100]
                     rprint(f"  [red]✗ Error: {escape(error_msg)}[/red]")
                     failures += 1
 
-                    # Mark as failed with error message (fresh DB manager)
-                    db = MongoDBManager()
-                    try:
+                    # Mark as failed with error message using context manager
+                    async with MongoDBManager() as db:
                         await db.mark_transcript_failed(video.video_id, error_msg)
-                    finally:
-                        db.client.close()
 
         asyncio.run(process_all())
 
         # Summary
-        rprint(f"\n[bold]Transcription Complete[/bold]")
+        rprint("\n[bold]Transcription Complete[/bold]")
         rprint(f"  [green]Successes: {successes}[/green]")
         rprint(f"  [red]Failures: {failures}[/red]")
         if skipped > 0:
@@ -642,9 +666,10 @@ def channel_remove(
     force: bool = typer.Option(False, "-f", "--force", help="Force removal without confirmation"),
 ):
     """Remove a channel from tracking."""
+    import asyncio
+
     from src.channel import resolve_channel_handle
     from src.database import get_db_manager
-    import asyncio
 
     try:
         # Resolve channel handle
@@ -667,7 +692,7 @@ def channel_remove(
         if deleted:
             rprint(f"[green]✓ Channel @{handle.lstrip('@')} removed successfully[/green]\n")
         else:
-            rprint(f"[yellow]Channel not found[/yellow]\n")
+            rprint("[yellow]Channel not found[/yellow]\n")
 
     except Exception as e:
         rprint(f"[red]✗ Error: {escape(str(e))}[/red]")

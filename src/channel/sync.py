@@ -3,9 +3,8 @@
 from datetime import datetime
 
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from .feed_fetcher import fetch_videos, fetch_all_with_ytdlp
+from .feed_fetcher import fetch_videos
 from .resolver import resolve_channel_handle
 from .schemas import ChannelDocument, SyncResult, VideoMetadata, VideoMetadataDocument
 
@@ -70,6 +69,7 @@ def sync_channel(
     async def _save_all():
         # Save channel to database
         console.print("\n[bold blue]Updating channel record...[/bold blue]")
+
         channel_doc = ChannelDocument(
             channel_id=channel_id,
             channel_handle=handle.lstrip("@"),
@@ -77,7 +77,7 @@ def sync_channel(
             channel_url=channel_url,
             last_synced=datetime.utcnow(),
             total_videos_tracked=len(videos_fetched),
-            sync_mode=mode,  # type: ignore
+            sync_mode=mode if mode in ("recent", "all") else "recent",  # type: ignore
         )
 
         channel_db_id = await db.save_channel(channel_doc)
@@ -118,19 +118,20 @@ def sync_channel(
                 )
                 videos_existing += 1  # Assume it exists
 
-        console.print(f"\n[green]✓ Sync complete![/green]")
+        console.print("\n[green]✓ Sync complete![/green]")
         console.print(f"   [dim]New videos: {videos_new}[/dim]")
         console.print(f"   [dim]Existing videos: {videos_existing}[/dim]")
 
         return channel_doc, videos_new, videos_existing
 
+    # Note: This is safe because sync_channel() is called from sync CLI context
     channel_doc, videos_new, videos_existing = asyncio.run(_save_all())
 
     return SyncResult(
         channel_id=channel_id,
         channel_handle=handle.lstrip("@"),
         channel_title=channel_doc.channel_title,
-        sync_mode=mode,  # type: ignore
+        sync_mode=mode if mode in ("recent", "all") else "recent",  # type: ignore
         videos_fetched=len(videos_fetched),
         videos_new=videos_new,
         videos_existing=videos_existing,
@@ -150,14 +151,13 @@ def get_pending_videos(
     Returns:
         List of VideoMetadataDocument objects
     """
-    from src.database import get_db_manager as get_default_db
-
-    db = db_manager or get_default_db()
-
     import asyncio
 
+    from src.database import MongoDBManager
+
     async def _fetch():
-        return await db.get_pending_transcription_videos(channel_id)
+        async with MongoDBManager() as db:
+            return await db.get_pending_transcription_videos(channel_id)
 
     pending = asyncio.run(_fetch())
 
@@ -199,14 +199,13 @@ def mark_video_transcribed(
     Returns:
         True if successful
     """
-    from src.database import get_db_manager as get_default_db
-
-    db = db_manager or get_default_db()
-
     import asyncio
 
+    from src.database import MongoDBManager
+
     async def _mark():
-        return await db.mark_transcript_completed(video_id, transcript_id)
+        async with MongoDBManager() as db:
+            return await db.mark_transcript_completed(video_id, transcript_id)
 
     return asyncio.run(_mark())
 
@@ -235,8 +234,8 @@ def _fetch_new_videos_only(
         List of NEW VideoMetadata objects
     """
     import asyncio
-    import subprocess
     import json
+    import subprocess
 
     console.print("[dim]Step 1: Fetching video IDs (fast mode)...[/dim]")
 
@@ -272,8 +271,11 @@ def _fetch_new_videos_only(
 
         # Step 2: Check which are already in DB
         async def _get_existing_ids():
-            existing = await db.list_videos_by_channel(channel_id, limit=max_videos or 10000)
-            return {v["video_id"] for v in existing}
+            from src.database import MongoDBManager
+
+            async with MongoDBManager() as db:
+                existing = await db.list_videos_by_channel(channel_id, limit=max_videos or 10000)
+                return {v["video_id"] for v in existing}
 
         existing_ids = asyncio.run(_get_existing_ids())
         console.print(f"[dim]   {len(existing_ids)} videos already in database[/dim]")
@@ -293,9 +295,8 @@ def _fetch_new_videos_only(
 
         new_videos = []
         for i, video_id in enumerate(new_video_ids, 1):
-            console.print(
-                f"[dim]   {i}/{len(new_video_ids)} Fetching: {video_titles.get(video_id, video_id)[:50]}...[/dim]"
-            )
+            title = video_titles.get(video_id, video_id)[:50]
+            console.print(f"[dim]   {i}/{len(new_video_ids)} Fetching: {title}...[/dim]")
 
             try:
                 cmd = [

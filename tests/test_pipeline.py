@@ -1,6 +1,6 @@
 """Tests for the transcription pipeline."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -46,7 +46,7 @@ class TestSchemas:
             duration_seconds=60.0,
             total_text_length=500,
             language="en",
-            started_at=datetime.now(timezone.utc),
+            started_at=datetime.now(UTC),
             duration_seconds_total=5.0,
             saved_to_db=True,
         )

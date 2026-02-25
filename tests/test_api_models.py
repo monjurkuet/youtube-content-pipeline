@@ -1,6 +1,6 @@
 """Tests for API models."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from src.api.models.requests import (
     JobStatusResponse,
@@ -40,7 +40,7 @@ class TestTranscriptionJobResponse:
             status="queued",
             video_id="test123",
             message="Job queued",
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         assert response.job_id == "job_test123"
         assert response.status == "queued"

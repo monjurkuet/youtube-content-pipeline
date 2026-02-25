@@ -1,19 +1,20 @@
 """FastAPI dependencies for the API module."""
 
-from motor.motor_asyncio import AsyncIOMotorDatabase
+from typing import Any
 
 from src.core.config import Settings, get_settings
-from src.database import MongoDBManager, get_db_manager
+from src.database.manager import MongoDBManager, get_db_manager
 
 
-async def get_db() -> AsyncIOMotorDatabase:
+async def get_db() -> Any:
     """Dependency to get MongoDB database instance.
 
     Returns:
         AsyncIOMotorDatabase: The MongoDB database instance
     """
     db_manager = get_db_manager()
-    return db_manager.db
+    await db_manager.initialize()
+    return db_manager.db  # type: ignore[no-any-return]
 
 
 def get_settings_dep() -> Settings:
@@ -31,4 +32,6 @@ async def get_db_manager_dep() -> MongoDBManager:
     Returns:
         MongoDBManager: Database manager instance
     """
-    return get_db_manager()
+    db_manager = get_db_manager()
+    await db_manager.initialize()
+    return db_manager

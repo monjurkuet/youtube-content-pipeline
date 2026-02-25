@@ -1,0 +1,45 @@
+# Port Configuration for YouTube Transcription Pipeline
+# Using uncommon ports to avoid conflicts with other services
+# =============================================================================
+
+# API Server Configuration
+api:
+  host: "0.0.0.0"
+  port: 18080  # Uncommon port for API (instead of 8000)
+  metrics_path: "/metrics"
+  docs_path: "/docs"
+
+# Prometheus Configuration
+prometheus:
+  port: 19090  # Uncommon port for Prometheus (instead of 9090)
+  storage_path: "/opt/monitoring/data/prometheus"
+  config_path: "/opt/monitoring/config/prometheus.yml"
+  retention_days: 15
+
+# Grafana Configuration
+grafana:
+  port: 13000  # Uncommon port for Grafana (instead of 3000)
+  data_path: "/opt/monitoring/data/grafana"
+  config_path: "/etc/grafana/grafana.ini"
+  provisioning_path: "/etc/grafana/provisioning"
+
+# Redis Configuration (if using)
+redis:
+  port: 16379  # Uncommon port for Redis (instead of 6379)
+  host: "localhost"
+  db: 0
+
+# MongoDB Configuration
+mongodb:
+  port: 27017  # Standard MongoDB port (usually fine to keep)
+  host: "localhost"
+  database: "video_pipeline"
+
+# =============================================================================
+# Access URLs (update these when ports change):
+# =============================================================================
+# API:         http://localhost:18080
+# Swagger UI:  http://localhost:18080/docs
+# Prometheus:  http://localhost:19090
+# Grafana:     http://localhost:13000 (admin/admin)
+# =============================================================================

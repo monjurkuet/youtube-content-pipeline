@@ -1,7 +1,7 @@
 """Pydantic schemas for channel tracking module."""
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -35,7 +35,7 @@ class VideoMetadataDocument(BaseModel):
     transcript_id: str | None = None
     synced_at: datetime = Field(default_factory=datetime.utcnow)
 
-    def model_dump_for_mongo(self) -> dict:
+    def model_dump_for_mongo(self) -> dict[str, Any]:
         """Convert to dict suitable for MongoDB storage."""
         data = self.model_dump()
         data["synced_at"] = self.synced_at.isoformat()
@@ -56,7 +56,7 @@ class ChannelDocument(BaseModel):
     total_videos_tracked: int = 0
     sync_mode: Literal["recent", "all"] = "recent"
 
-    def model_dump_for_mongo(self) -> dict:
+    def model_dump_for_mongo(self) -> dict[str, Any]:
         """Convert to dict suitable for MongoDB storage."""
         data = self.model_dump()
         data["tracked_since"] = self.tracked_since.isoformat()

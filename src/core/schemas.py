@@ -1,7 +1,7 @@
 """Pydantic schemas for transcription pipeline."""
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -60,7 +60,7 @@ class TranscriptDocument(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     analyzed_at: datetime | None = None
 
-    def model_dump_for_mongo(self) -> dict:
+    def model_dump_for_mongo(self) -> dict[str, Any]:
         """Convert to dict suitable for MongoDB storage."""
         data = self.model_dump()
         data["created_at"] = self.created_at.isoformat()
@@ -77,6 +77,12 @@ class TranscriptDocument(BaseModel):
         title: str | None = None,
     ) -> "TranscriptDocument":
         """Create transcript document from RawTranscript."""
+
+        # Validate source_type
+        valid_source_types: tuple[str, ...] = ("youtube", "url", "local")
+        if source_type not in valid_source_types:
+            source_type = "youtube"  # Default fallback
+
         return cls(
             video_id=raw_transcript.video_id,
             source_type=source_type,  # type: ignore

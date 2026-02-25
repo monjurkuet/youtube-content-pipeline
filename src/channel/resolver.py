@@ -2,16 +2,15 @@
 
 import json
 import re
-from pathlib import Path
-from typing import Tuple
 
-import requests
 from rich.console import Console
+
+from src.core.http_session import get
 
 console = Console()
 
 
-def resolve_channel_handle(handle: str) -> Tuple[str, str]:
+def resolve_channel_handle(handle: str) -> tuple[str, str]:
     """
     Resolve YouTube channel handle to channel ID and URL.
 
@@ -73,8 +72,8 @@ def _try_rss_feed(handle: str) -> str | None:
 
 def _try_ytdlp(handle: str) -> str | None:
     """Use yt-dlp to resolve channel handle to channel ID."""
-    import subprocess
     import json
+    import subprocess
 
     channel_url = f"https://www.youtube.com/{handle}/videos"
 
@@ -125,7 +124,7 @@ def _extract_channel_id_from_page(channel_url: str) -> str | None:
     try:
         # Try RSS feed with common channel ID patterns
         # First, get the actual channel URL by following redirects
-        response = requests.get(channel_url, timeout=10, allow_redirects=True)
+        response = get(channel_url, timeout=10, allow_redirects=True)
 
         # Look for channel ID in the response
         # Pattern 1: channel_id in URL redirects
@@ -179,7 +178,7 @@ def get_channel_id_from_rss(channel_id: str) -> str | None:
     rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
 
     try:
-        response = requests.get(rss_url, timeout=10)
+        response = get(rss_url, timeout=10)
         if response.status_code == 200:
             # Parse XML to verify and get canonical channel ID
             import xml.etree.ElementTree as ET

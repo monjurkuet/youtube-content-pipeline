@@ -157,12 +157,12 @@ class OpenVINOWhisperTranscriber:
             error_msg = str(e)
             if "longjmp" in error_msg.lower() or "memory" in error_msg.lower():
                 raise RuntimeError(
-                    f"OpenVINO transcription failed due to library crash. "
-                    f"This is typically caused by: "
-                    f"(1) Insufficient memory, (2) OpenVINO library bug, or "
-                    f"(3) Incompatible hardware. Try using CPU device or "
-                    f"installing the standard transformers package: "
-                    f"pip install transformers torch"
+                    "OpenVINO transcription failed due to library crash. "
+                    "This is typically caused by: "
+                    "(1) Insufficient memory, (2) OpenVINO library bug, or "
+                    "(3) Incompatible hardware. Try using CPU device or "
+                    "installing the standard transformers package: "
+                    "pip install transformers torch"
                 ) from e
             raise
 

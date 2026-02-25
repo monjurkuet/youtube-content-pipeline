@@ -103,11 +103,11 @@ class TranscriptionHandler:
             try:
                 from youtube_transcript_api import YouTubeTranscriptApi
                 from youtube_transcript_api._errors import (
+                    HTTPError,
                     IpBlocked,
                     RequestBlocked,
                     TranscriptsDisabled,
                     VideoUnavailable,
-                    HTTPError,
                 )
 
                 ytt_api = YouTubeTranscriptApi()
@@ -123,10 +123,15 @@ class TranscriptionHandler:
 
                         original_session = requests.Session
 
-                        def patched_session(*args, **kwargs):
-                            session = original_session(*args, **kwargs)
+                        def patched_session(
+                            *args,
+                            _cookie_string=cookie_string,
+                            _original_session=original_session,
+                            **kwargs,
+                        ):
+                            session = _original_session(*args, **kwargs)
                             # Parse cookie string and add to session
-                            for cookie_part in cookie_string.split("; "):
+                            for cookie_part in _cookie_string.split("; "):
                                 if "=" in cookie_part:
                                     name, value = cookie_part.split("=", 1)
                                     session.cookies.set(name, value, domain=".youtube.com")
@@ -142,7 +147,7 @@ class TranscriptionHandler:
                 finally:
                     # Restore original Session
                     if self.settings.youtube_api_use_cookies and cookie_string:
-                        requests.Session = original_session
+                        requests.Session = original_session  # type: ignore[possibly-unbound]
 
                 segments = [
                     TranscriptSegment(
@@ -165,10 +170,10 @@ class TranscriptionHandler:
                 last_error = e
                 if retries <= self.settings.rate_limiting_max_retries:
                     wait_time = self.settings.rate_limiting_retry_delay * (2 ** (retries - 1))
-                    console.print(
-                        f"[yellow]   IP blocked/rate limited, retrying in {wait_time:.1f}s "
-                        f"(attempt {retries}/{self.settings.rate_limiting_max_retries + 1})...[/yellow]"
-                    )
+                    msg = f"[yellow]   IP blocked/rate limited, retrying in {wait_time:.1f}s "
+                    msg += f"(attempt {retries}/{self.settings.rate_limiting_max_retries + 1})"
+                    msg += "...[/yellow]"
+                    console.print(msg)
                     time.sleep(wait_time)
                 else:
                     raise YouTubeAPIError(
@@ -187,10 +192,10 @@ class TranscriptionHandler:
                     last_error = e
                     if retries <= self.settings.rate_limiting_max_retries:
                         wait_time = self.settings.rate_limiting_retry_delay * (2 ** (retries - 1))
-                        console.print(
-                            f"[yellow]   HTTP 429 rate limit, retrying in {wait_time:.1f}s "
-                            f"(attempt {retries}/{self.settings.rate_limiting_max_retries + 1})...[/yellow]"
-                        )
+                        msg = f"[yellow]   HTTP 429 rate limit, retrying in {wait_time:.1f}s "
+                        msg += f"(attempt {retries}/{self.settings.rate_limiting_max_retries + 1})"
+                        msg += "...[/yellow]"
+                        console.print(msg)
                         time.sleep(wait_time)
                     else:
                         raise YouTubeAPIError(
@@ -211,10 +216,10 @@ class TranscriptionHandler:
                     last_error = e
                     if retries <= self.settings.rate_limiting_max_retries:
                         wait_time = self.settings.rate_limiting_retry_delay * (2 ** (retries - 1))
-                        console.print(
-                            f"[yellow]   Rate limit detected, retrying in {wait_time:.1f}s "
-                            f"(attempt {retries}/{self.settings.rate_limiting_max_retries + 1})...[/yellow]"
-                        )
+                        msg = f"[yellow]   Rate limit detected, retrying in {wait_time:.1f}s "
+                        msg += f"(attempt {retries}/{self.settings.rate_limiting_max_retries + 1})"
+                        msg += "...[/yellow]"
+                        console.print(msg)
                         time.sleep(wait_time)
                     else:
                         raise YouTubeAPIError(

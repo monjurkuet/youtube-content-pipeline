@@ -1,13 +1,15 @@
 """Video feed fetcher - fetches videos from RSS feeds and yt-dlp."""
 
-import subprocess
+import contextlib
 import json
+import subprocess
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Literal
 
-import requests
 from rich.console import Console
+
+from src.core.http_session import get
 
 from .schemas import VideoMetadata
 
@@ -29,7 +31,7 @@ def fetch_latest_from_rss(channel_id: str, limit: int = 15) -> list[VideoMetadat
     console.print(f"[dim]Fetching RSS feed: {rss_url}[/dim]")
 
     try:
-        response = requests.get(rss_url, timeout=15)
+        response = get(rss_url, timeout=15)
         response.raise_for_status()
 
         # Parse XML
@@ -114,7 +116,7 @@ def fetch_latest_from_rss(channel_id: str, limit: int = 15) -> list[VideoMetadat
         console.print(f"[green]✓ Fetched {len(videos)} videos from RSS[/green]")
         return videos
 
-    except requests.RequestException as e:
+    except Exception as e:
         console.print(f"[red]Error fetching RSS feed: {e}[/red]")
         return []
 
@@ -140,7 +142,7 @@ def fetch_all_with_ytdlp(
     limit_msg = f"Limit: {max_videos} videos" if max_videos else "Fetching ALL videos"
     console.print(f"[dim]Fetching videos with full metadata: {channel_url}[/dim]")
     console.print(f"[dim]   {limit_msg}[/dim]")
-    console.print(f"[dim]   This may take a while...[/dim]")
+    console.print("[dim]   This may take a while...[/dim]")
 
     videos = []
     seen_ids = set()
@@ -215,20 +217,14 @@ def fetch_all_with_ytdlp(
                 # Parse upload date from various sources
                 published_at = None
                 if upload_date:
-                    try:
+                    with contextlib.suppress(ValueError):
                         published_at = datetime.strptime(upload_date, "%Y%m%d")
-                    except ValueError:
-                        pass
                 elif timestamp:
-                    try:
+                    with contextlib.suppress(ValueError, OSError):
                         published_at = datetime.fromtimestamp(timestamp)
-                    except (ValueError, OSError):
-                        pass
                 elif release_date:
-                    try:
+                    with contextlib.suppress(ValueError):
                         published_at = datetime.strptime(release_date, "%Y%m%d")
-                    except ValueError:
-                        pass
 
                 # Ensure datetime is timezone-naive for consistency
                 if published_at and published_at.tzinfo is not None:
