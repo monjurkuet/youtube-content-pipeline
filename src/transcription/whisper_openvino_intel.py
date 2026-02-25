@@ -26,6 +26,7 @@ class OpenVINOWhisperTranscriber:
         "medium": ("OpenVINO/whisper-medium-int8-ov", "int8"),
         "large-v2": ("OpenVINO/whisper-large-v2-fp16-ov", "fp16"),
         "large-v3": ("OpenVINO/whisper-large-v3-fp16-ov", "fp16"),
+        "large-v3-turbo": ("OpenVINO/whisper-large-v3-fp16-ov", "fp16"),  # Use large-v3 as fallback
     }
 
     def __init__(
