@@ -323,65 +323,22 @@ class TranscriptionHandler:
             raise WhisperError(f"Audio download failed: {error_detail}") from e
 
     def _transcribe_with_whisper(self, audio_path: str) -> RawTranscript:
-        """Transcribe audio file using faster-whisper (CTranslate2) - most reliable."""
-        # Try faster-whisper first (most reliable, 4x faster than original)
-        try:
-            from faster_whisper import WhisperModel
+        """Transcribe audio file using faster-whisper or OpenVINO."""
+        # Check for Intel GPU availability first
+        intel_gpu_available = self._check_intel_gpu()
 
-            # Determine device - auto-detect
-            device = os.environ.get("WHISPER_DEVICE", "auto")
-            compute_type = "float16" if device not in ("cpu", "auto") else "float32"
-
-            print(f"   🔄 Loading faster-whisper model: {self.settings.openvino_whisper_model}")
-            model = WhisperModel(
-                self.settings.openvino_whisper_model,
-                device="auto",
-                compute_type=compute_type,
-            )
-
-            print(f"   🎵 Transcribing audio...")
-            segments, info = model.transcribe(
-                audio_path,
-                language="en",
-                beam_size=5,
-                vad_filter=True,
-            )
-
-            # Collect segments
-            transcript_segments = []
-            for segment in segments:
-                transcript_segments.append(
-                    TranscriptSegment(
-                        text=segment.text,
-                        start=segment.start,
-                        duration=segment.duration,
-                    )
-                )
-
-            # Clean up
-            del model
-
-            return RawTranscript(
-                video_id="",  # Will be set by caller
-                segments=transcript_segments,
-                source="whisper",
-                language="en",
-            )
-
-        except Exception as e:
-            # Fallback to transformers PyTorch if faster-whisper fails
-            print(f"   ⚠️  faster-whisper failed ({e}), trying PyTorch...")
-
+        if intel_gpu_available:
+            # Use Optimum Intel OpenVINO for Intel GPU
             try:
-                from src.transcription.whisper_transformers import TransformersWhisperTranscriber
+                from src.transcription.whisper_openvino_intel import OpenVINOWhisperTranscriber
 
-                device = os.environ.get("WHISPER_DEVICE", "auto")
-                if device == "auto":
-                    device = "cuda" if torch.cuda.is_available() else "cpu"
+                # Use larger model on GPU - medium is a good balance
+                model_id = os.environ.get("WHISPER_MODEL", "openai/whisper-medium")
 
-                transcriber = TransformersWhisperTranscriber(
-                    model_id=self.settings.openvino_whisper_model,
-                    device=device,
+                print(f"   🎮 Using Intel GPU with OpenVINO ({model_id})...")
+                transcriber = OpenVINOWhisperTranscriber(
+                    model_id=model_id,
+                    device="GPU",
                     cache_dir=self.settings.openvino_cache_dir,
                 )
 
@@ -407,42 +364,98 @@ class TranscriptionHandler:
                     source="whisper",
                     language=result.get("language", "en"),
                 )
-            except Exception as e2:
-                # Last resort: try OpenVINO
-                print(f"   ⚠️  PyTorch failed ({e2}), trying OpenVINO...")
-                try:
-                    from src.transcription.whisper_openvino import OpenVINOWhisperTranscriber
+            except Exception as e:
+                print(f"   ⚠️  Intel OpenVINO failed ({e})")
 
-                    transcriber = OpenVINOWhisperTranscriber(
-                        model_id=self.settings.openvino_whisper_model,
-                        device=self.settings.openvino_device,
-                        cache_dir=self.settings.openvino_cache_dir,
+        # Try faster-whisper (works on CPU)
+        try:
+            from faster_whisper import WhisperModel
+
+            model_id = os.environ.get("WHISPER_MODEL", "base")
+            compute_type = "int8_float16"
+
+            print(f"   🔄 Loading faster-whisper: {model_id}")
+            model = WhisperModel(
+                model_id,
+                device="auto",
+                compute_type=compute_type,
+            )
+
+            print(f"   🎵 Transcribing audio...")
+            segs, info = model.transcribe(
+                audio_path,
+                language="en",
+                beam_size=5,
+                vad_filter=True,
+            )
+
+            transcript_segments = []
+            for segment in segs:
+                transcript_segments.append(
+                    TranscriptSegment(
+                        text=segment.text,
+                        start=segment.start,
+                        duration=segment.duration,
                     )
+                )
 
-                    result = transcriber.transcribe(
-                        audio_path,
-                        language="en",
-                        chunk_length=self.settings.whisper_chunk_length,
+            del model
+
+            return RawTranscript(
+                video_id="",
+                segments=transcript_segments,
+                source="whisper",
+                language="en",
+            )
+
+        except Exception as e:
+            print(f"   ⚠️  faster-whisper failed ({e})")
+
+            # Last resort: try OpenVINO (old method)
+            try:
+                from src.transcription.whisper_openvino import OpenVINOWhisperTranscriber
+
+                transcriber = OpenVINOWhisperTranscriber(
+                    model_id=self.settings.openvino_whisper_model,
+                    device=self.settings.openvino_device,
+                    cache_dir=self.settings.openvino_cache_dir,
+                )
+
+                result = transcriber.transcribe(
+                    audio_path,
+                    language="en",
+                    chunk_length=self.settings.whisper_chunk_length,
+                )
+
+                segments = [
+                    TranscriptSegment(
+                        text=result["text"],
+                        start=0.0,
+                        duration=0.0,
                     )
+                ]
 
-                    segments = [
-                        TranscriptSegment(
-                            text=result["text"],
-                            start=0.0,
-                            duration=0.0,
-                        )
-                    ]
+                return RawTranscript(
+                    video_id="",
+                    segments=segments,
+                    source="whisper",
+                    language=result.get("language", "en"),
+                )
+            except Exception as e3:
+                raise WhisperError(
+                    f"All Whisper methods failed: intel_openvino, faster-whisper={e}, openvino={e3}"
+                ) from e3
 
-                    return RawTranscript(
-                        video_id="",
-                        segments=segments,
-                        source="whisper",
-                        language=result.get("language", "en"),
-                    )
-                except Exception as e3:
-                    raise WhisperError(
-                        f"All Whisper methods failed: faster-whisper={e}, transformers={e2}, openvino={e3}"
-                    ) from e3
+    def _check_intel_gpu(self) -> bool:
+        """Check if Intel GPU is available."""
+        try:
+            import openvino as ov
+
+            core = ov.Core()
+            devices = core.available_devices
+            return "GPU" in devices
+        except Exception:
+            return False
 
 
 def identify_source_type(source: str) -> tuple[str, str]:
