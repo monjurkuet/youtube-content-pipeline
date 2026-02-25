@@ -174,14 +174,35 @@ uv run python -m src.cli batch sources.txt
 ### Start the API Server
 
 ```bash
-# Basic server
+# Option 1: Basic server (default port 8000)
 uv run uvicorn src.api.main:app --reload
 
-# With Prometheus metrics
-uv run uvicorn src.api.main:app --reload --host 0.0.0.0
+# Option 2: With custom port
+uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000
 
-# Production (with workers)
+# Option 3: Production (with workers)
 uv run uvicorn src.api.main:app --workers 4 --host 0.0.0.0 --port 8000
+
+# Option 4: With API key (set environment variable)
+API_KEYS=your-secret-key uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+
+# Option 5: Use the start-api.sh script (recommended for production)
+chmod +x scripts/start-api.sh
+./scripts/start-api.sh start  # Starts API on port 18080
+```
+
+### Start Full Monitoring Stack (API + Prometheus + Grafana)
+
+```bash
+# Start all services
+chmod +x scripts/launch-services.sh
+./scripts/launch-services.sh start
+
+# Access:
+# - API: http://localhost:18080
+# - Swagger UI: http://localhost:18080/docs
+# - Prometheus: http://localhost:19090
+# - Grafana: http://localhost:13000 (admin/admin)
 ```
 
 ### API Endpoints
@@ -190,6 +211,7 @@ uv run uvicorn src.api.main:app --workers 4 --host 0.0.0.0 --port 8000
 |--------|----------|-------------|
 | `POST` | `/api/v1/videos/transcribe` | Submit video for transcription |
 | `POST` | `/api/v1/videos/batch-transcribe` | Batch transcription (up to 100 videos) |
+| `POST` | `/api/v1/videos/channel-transcribe-pending` | Transcribe pending videos from channel |
 | `GET` | `/api/v1/videos/jobs/{job_id}` | Check job status |
 | `GET` | `/api/v1/videos/jobs` | List transcription jobs |
 | `GET` | `/api/v1/transcripts/{video_id}` | Get transcript |
@@ -197,6 +219,7 @@ uv run uvicorn src.api.main:app --workers 4 --host 0.0.0.0 --port 8000
 | `DELETE` | `/api/v1/transcripts/{video_id}` | Delete transcript |
 | `GET` | `/api/v1/channels/` | List tracked channels |
 | `GET` | `/api/v1/channels/{channel_id}` | Get channel details |
+| `POST` | `/api/v1/channels/from-videos` | Add channels from video URLs |
 | `DELETE` | `/api/v1/channels/{channel_id}` | Remove channel from tracking |
 | `POST` | `/api/v1/channels/{channel_id}/sync` | Trigger channel sync |
 | `GET` | `/api/v1/channels/{channel_id}/videos` | Get channel videos |

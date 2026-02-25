@@ -497,6 +497,65 @@ Get comprehensive statistics about the pipeline.
 
 ---
 
+### Channel Transcription Endpoints
+
+#### Transcribe Pending Videos from Channel
+
+**Endpoint**: `POST /api/v1/videos/channel-transcribe-pending`
+
+Transcribe pending videos from a tracked YouTube channel. Finds videos with `transcript_status != "completed"` and submits them for transcription.
+
+**Request Body**:
+
+```json
+{
+  "channel_id": "UCX6OQ3DkcsbYNE6H8uQQuVA",
+  "batch_size": 5,
+  "priority": "normal"
+}
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `channel_id` | string | Yes | - | YouTube channel ID (e.g., `UCX6OQ3DkcsbYNE6H8uQQuVA`) |
+| `batch_size` | integer | No | 5 | Number of videos to transcribe (1-100) |
+| `priority` | string | No | "normal" | Job priority: "low", "normal", "high" |
+
+**Response** (202 Accepted):
+
+```json
+{
+  "success": true,
+  "channel_id": "UCX6OQ3DkcsbYNE6H8uQQuVA",
+  "total_pending": 117,
+  "submitted": 5,
+  "jobs": [
+    {
+      "video_id": "dQw4w9WgXcQ",
+      "title": "Example Video Title",
+      "job_id": "job_dQw4w9WgXcQ_20240115103000",
+      "status": "queued"
+    }
+  ],
+  "message": "Submitted 5 jobs from 117 pending videos"
+}
+```
+
+**Example**:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/videos/channel-transcribe-pending \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key" \
+  -d '{
+    "channel_id": "UCQ8uPiIzRVwWRUSbzCZH0dA",
+    "batch_size": 10,
+    "priority": "normal"
+  }'
+```
+
+---
+
 ### Batch Transcription
 
 #### Submit Multiple Videos
