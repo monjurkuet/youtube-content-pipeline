@@ -634,19 +634,23 @@ async def batch_transcribe(
                 request.save_to_db,
             )
 
-            jobs.append({
-                "source": source,
-                "video_id": video_id,
-                "job_id": job_id,
-                "status": "queued",
-            })
+            jobs.append(
+                {
+                    "source": source,
+                    "video_id": video_id,
+                    "job_id": job_id,
+                    "status": "queued",
+                }
+            )
 
         except Exception as e:
-            jobs.append({
-                "source": source,
-                "error": str(e),
-                "status": "failed",
-            })
+            jobs.append(
+                {
+                    "source": source,
+                    "error": str(e),
+                    "status": "failed",
+                }
+            )
 
     successful = sum(1 for j in jobs if j.get("status") == "queued")
     failed = len(jobs) - successful
@@ -655,4 +659,173 @@ async def batch_transcribe(
         total_submitted=successful,
         jobs=jobs,
         message=f"Submitted {successful} jobs ({failed} failed)",
+    )
+
+
+# =============================================================================
+# Channel Pending Transcription
+# =============================================================================
+
+
+class ChannelTranscribePendingRequest(BaseModel):
+    """Request model for transcribing pending videos from a channel."""
+
+    channel_id: str = Field(
+        ...,
+        description="YouTube channel ID to transcribe pending videos from",
+        examples=["UCX6OQ3DkcsbYNE6H8uQQuVA"],
+    )
+    batch_size: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        description="Number of videos to transcribe per request",
+    )
+    priority: Literal["low", "normal", "high"] = Field(
+        default="normal",
+        description="Processing priority for the jobs",
+    )
+
+
+class ChannelTranscribePendingResponse(BaseModel):
+    """Response model for channel pending transcription."""
+
+    success: bool = Field(..., description="Whether the operation succeeded")
+    channel_id: str = Field(..., description="Channel ID")
+    total_pending: int = Field(..., description="Total pending videos in channel")
+    submitted: int = Field(..., description="Number of jobs submitted")
+    jobs: list[dict[str, Any]] = Field(..., description="List of submitted jobs")
+    message: str = Field(..., description="Summary message")
+
+
+@router.post(
+    "/channel-transcribe-pending",
+    response_model=ChannelTranscribePendingResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Transcribe pending videos from channel",
+    description="""
+    Transcribe pending videos from a tracked YouTube channel.
+
+    Finds videos in the channel that have not been transcribed yet and submits
+    them for transcription. Returns immediately with job IDs for all submitted videos.
+
+    Use this endpoint to start the transcription crawling process for a channel.
+    """,
+    operation_id="transcribe_channel_pending",
+    responses={
+        202: {
+            "description": "Jobs accepted for processing",
+        },
+        404: {
+            "description": "Channel not found",
+        },
+    },
+)
+async def transcribe_channel_pending_endpoint(
+    request: ChannelTranscribePendingRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    auth_ctx=Depends(validate_api_key),
+) -> ChannelTranscribePendingResponse:
+    """Transcribe pending videos from a channel."""
+    # Check if channel exists
+    channel = await db.channels.find_one({"channel_id": request.channel_id})
+    if channel is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Channel {request.channel_id} not found",
+        )
+
+    # Get pending videos directly from database using channel_id
+    # Videos are stored in video_metadata collection
+    settings = get_settings()
+    video_metadata = db.client[settings.mongodb_database]["video_metadata"]
+    pending_videos = await video_metadata.find(
+        {
+            "channel_id": request.channel_id,
+            "transcript_status": {"$ne": "completed"},
+        }
+    ).to_list(length=1000)
+
+    if not pending_videos:
+        return ChannelTranscribePendingResponse(
+            success=True,
+            channel_id=request.channel_id,
+            total_pending=0,
+            submitted=0,
+            jobs=[],
+            message="No pending videos to transcribe",
+        )
+
+    # Limit to batch_size
+    videos_to_process = pending_videos[: request.batch_size]
+
+    jobs = []
+    for video in videos_to_process:
+        video_id = video.get("video_id")
+        if not video_id:
+            continue
+
+        video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+        try:
+            # Create job
+            job_id = _generate_job_id(video_id)
+
+            job_data = {
+                "job_id": job_id,
+                "video_id": video_id,
+                "status": JobStatus.QUEUED,
+                "progress_percent": 0.0,
+                "current_step": "Queued for processing",
+                "created_at": datetime.now(timezone.utc),
+                "webhook_url": None,
+                "save_to_db": True,
+                "priority": request.priority,
+            }
+
+            if auth_ctx:
+                job_data["api_key_hash"] = auth_ctx.key_hash
+
+            await _set_job(job_id, job_data)
+
+            # Record metrics
+            record_transcription_job_start(source_type="youtube")
+
+            # Trigger background processing
+            background_tasks.add_task(
+                _process_video_transcription,
+                job_id,
+                video_url,
+                None,
+                True,
+            )
+
+            jobs.append(
+                {
+                    "video_id": video_id,
+                    "title": video.get("title", "Unknown")[:50],
+                    "job_id": job_id,
+                    "status": "queued",
+                }
+            )
+
+        except Exception as e:
+            jobs.append(
+                {
+                    "video_id": video_id,
+                    "error": str(e),
+                    "status": "failed",
+                }
+            )
+
+    successful = sum(1 for j in jobs if j.get("status") == "queued")
+
+    return ChannelTranscribePendingResponse(
+        success=True,
+        channel_id=request.channel_id,
+        total_pending=len(pending_videos),
+        submitted=successful,
+        jobs=jobs,
+        message=f"Submitted {successful} jobs from {len(pending_videos)} pending videos",
     )

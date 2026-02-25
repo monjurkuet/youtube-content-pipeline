@@ -363,7 +363,7 @@ health_check() {
     
     # Grafana Health
     echo -n "Grafana Health: "
-    if curl -s "http://localhost:$GRAFANA_PORT/api/health" | grep -q '"database":"ok"'; then
+    if curl -s "http://localhost:$GRAFANA_PORT/api/health" | grep -q '"database".*"ok"'; then
         echo -e "${GREEN}✓ Healthy${NC}"
     else
         echo -e "${RED}✗ Unhealthy${NC}"
