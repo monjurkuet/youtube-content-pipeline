@@ -1,11 +1,13 @@
 """Source-agnostic transcription handler with fallback chain."""
 
+import os
 import random
 import re
 import subprocess
 import time
 from pathlib import Path
 
+import torch
 from rich.console import Console
 
 from src.core.config import get_settings_with_yaml
@@ -321,44 +323,126 @@ class TranscriptionHandler:
             raise WhisperError(f"Audio download failed: {error_detail}") from e
 
     def _transcribe_with_whisper(self, audio_path: str) -> RawTranscript:
-        """Transcribe audio file using OpenVINO Whisper."""
-        from src.transcription.whisper_openvino import OpenVINOWhisperTranscriber
+        """Transcribe audio file using faster-whisper (CTranslate2) - most reliable."""
+        # Try faster-whisper first (most reliable, 4x faster than original)
+        try:
+            from faster_whisper import WhisperModel
 
-        transcriber = OpenVINOWhisperTranscriber(
-            model_id=self.settings.openvino_whisper_model,
-            device=self.settings.openvino_device,
-            cache_dir=self.settings.openvino_cache_dir,
-        )
+            # Determine device - auto-detect
+            device = os.environ.get("WHISPER_DEVICE", "auto")
+            compute_type = "float16" if device not in ("cpu", "auto") else "float32"
 
-        result = transcriber.transcribe(
-            audio_path,
-            chunk_length=self.settings.whisper_chunk_length,
-        )
-
-        # Convert to RawTranscript format
-        segments = [
-            TranscriptSegment(
-                text=seg["text"],
-                start=float(seg["start"]),
-                duration=float(seg["end"] - seg["start"]),
+            print(f"   🔄 Loading faster-whisper model: {self.settings.openvino_whisper_model}")
+            model = WhisperModel(
+                self.settings.openvino_whisper_model,
+                device="auto",
+                compute_type=compute_type,
             )
-            for seg in result.get("segments", [])
-        ]
 
-        # Extract video_id from audio path (remove _audio suffix)
-        audio_filename = Path(audio_path).stem
-        video_id = (
-            audio_filename.replace("_audio", "")
-            if audio_filename.endswith("_audio")
-            else audio_filename
-        )
+            print(f"   🎵 Transcribing audio...")
+            segments, info = model.transcribe(
+                audio_path,
+                language="en",
+                beam_size=5,
+                vad_filter=True,
+            )
 
-        return RawTranscript(
-            video_id=video_id,
-            segments=segments,
-            source="whisper",
-            language=result.get("language", "en"),
-        )
+            # Collect segments
+            transcript_segments = []
+            for segment in segments:
+                transcript_segments.append(
+                    TranscriptSegment(
+                        text=segment.text,
+                        start=segment.start,
+                        duration=segment.duration,
+                    )
+                )
+
+            # Clean up
+            del model
+
+            return RawTranscript(
+                video_id="",  # Will be set by caller
+                segments=transcript_segments,
+                source="whisper",
+                language="en",
+            )
+
+        except Exception as e:
+            # Fallback to transformers PyTorch if faster-whisper fails
+            print(f"   ⚠️  faster-whisper failed ({e}), trying PyTorch...")
+
+            try:
+                from src.transcription.whisper_transformers import TransformersWhisperTranscriber
+
+                device = os.environ.get("WHISPER_DEVICE", "auto")
+                if device == "auto":
+                    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+                transcriber = TransformersWhisperTranscriber(
+                    model_id=self.settings.openvino_whisper_model,
+                    device=device,
+                    cache_dir=self.settings.openvino_cache_dir,
+                )
+
+                result = transcriber.transcribe(
+                    audio_path,
+                    language="en",
+                    chunk_length=self.settings.whisper_chunk_length,
+                )
+
+                transcriber.unload()
+
+                segments = [
+                    TranscriptSegment(
+                        text=result["text"],
+                        start=0.0,
+                        duration=0.0,
+                    )
+                ]
+
+                return RawTranscript(
+                    video_id="",
+                    segments=segments,
+                    source="whisper",
+                    language=result.get("language", "en"),
+                )
+            except Exception as e2:
+                # Last resort: try OpenVINO
+                print(f"   ⚠️  PyTorch failed ({e2}), trying OpenVINO...")
+                try:
+                    from src.transcription.whisper_openvino import OpenVINOWhisperTranscriber
+
+                    transcriber = OpenVINOWhisperTranscriber(
+                        model_id=self.settings.openvino_whisper_model,
+                        device=self.settings.openvino_device,
+                        cache_dir=self.settings.openvino_cache_dir,
+                    )
+
+                    result = transcriber.transcribe(
+                        audio_path,
+                        language="en",
+                        chunk_length=self.settings.whisper_chunk_length,
+                    )
+
+                    segments = [
+                        TranscriptSegment(
+                            text=result["text"],
+                            start=0.0,
+                            duration=0.0,
+                        )
+                    ]
+
+                    return RawTranscript(
+                        video_id="",
+                        segments=segments,
+                        source="whisper",
+                        language=result.get("language", "en"),
+                    )
+                except Exception as e3:
+                    raise WhisperError(
+                        f"All Whisper methods failed: faster-whisper={e}, transformers={e2}, openvino={e3}"
+                    ) from e3
 
 
 def identify_source_type(source: str) -> tuple[str, str]:
