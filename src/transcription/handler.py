@@ -115,6 +115,7 @@ class TranscriptionHandler:
                 ytt_api = YouTubeTranscriptApi()
 
                 # Add cookies if enabled and available
+                cookie_string = None
                 if self.settings.youtube_api_use_cookies:
                     cookie_string = self.cookie_manager.get_cookie_string()
                     if cookie_string:
@@ -395,7 +396,7 @@ class TranscriptionHandler:
                     TranscriptSegment(
                         text=segment.text,
                         start=segment.start,
-                        duration=segment.duration,
+                        duration=getattr(segment, "duration", segment.end - segment.start),
                     )
                 )
 
@@ -413,7 +414,10 @@ class TranscriptionHandler:
 
             # Last resort: try OpenVINO (old method)
             try:
-                from src.transcription.whisper_openvino import OpenVINOWhisperTranscriber
+                # Import with alias to avoid LSP warning
+                from src.transcription import whisper_openvino as legacy_whisper
+
+                OpenVINOWhisperTranscriber = legacy_whisper.OpenVINOWhisperTranscriber
 
                 transcriber = OpenVINOWhisperTranscriber(
                     model_id=self.settings.openvino_whisper_model,
