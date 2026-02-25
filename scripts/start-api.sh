@@ -53,15 +53,28 @@ start_api() {
     fi
     
     cd "$PROJECT_DIR"
-    uv run uvicorn src.api.app:app --host 0.0.0.0 --port $API_PORT &
     
-    # Wait for startup
-    sleep 3
+    # Start in background and capture output to log
+    nohup uv run uvicorn src.api.main:app --host 0.0.0.0 --port $API_PORT > /tmp/transcription_api.log 2>&1 &
+    PID=$!
     
-    if [ -n "$(get_pid)" ]; then
-        log_success "API started (PID: $(get_pid), Port: $API_PORT)"
+    # Wait for startup (up to 15 seconds)
+    log_info "Waiting for API to start..."
+    for i in {1..15}; do
+        sleep 1
+        if curl -sf "http://localhost:$API_PORT/health" > /dev/null 2>&1; then
+            log_success "API started (PID: $PID, Port: $API_PORT)"
+            return 0
+        fi
+    done
+    
+    # If we get here, check if process is still running
+    if kill -0 $PID 2>/dev/null; then
+        log_success "API started (PID: $PID, Port: $API_PORT)"
     else
-        log_error "Failed to start API"
+        log_error "Failed to start API. Check /tmp/transcription_api.log for details"
+        echo "--- Last 20 lines of log ---"
+        tail -20 /tmp/transcription_api.log 2>/dev/null || true
         exit 1
     fi
 }
