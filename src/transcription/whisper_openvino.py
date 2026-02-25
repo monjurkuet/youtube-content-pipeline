@@ -1,6 +1,7 @@
 """Whisper transcription using OpenVINO on Intel GPU/CPU."""
 
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,10 @@ import torch
 # Fix OpenVINO threading issues
 os.environ["OMP_NUM_THREADS"] = "4"
 os.environ["OPENVINO_CPU_THREADS"] = "4"
+
+# Suppress OpenVINO warnings about memory/cleanup issues
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.environ["OPENVINO_LOG_LEVEL"] = "error"
 
 # Model cache to avoid repeated loading
 _MODEL_REGISTRY = {}
