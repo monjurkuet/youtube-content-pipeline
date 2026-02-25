@@ -372,10 +372,17 @@ class TranscriptionHandler:
         try:
             from faster_whisper import WhisperModel
 
-            model_id = os.environ.get("WHISPER_MODEL", "base")
-            compute_type = "int8_float16"
+            # Use tiny for CPU speed, or check for GPU
+            import torch
 
-            print(f"   🔄 Loading faster-whisper: {model_id}")
+            has_cuda = torch.cuda.is_available()
+
+            model_id = os.environ.get("WHISPER_MODEL", "tiny" if not has_cuda else "base")
+
+            # Use int8 for CPU, float16 for GPU
+            compute_type = "int8" if not has_cuda else "float16"
+
+            print(f"   🔄 Loading faster-whisper: {model_id} ({compute_type})")
             model = WhisperModel(
                 model_id,
                 device="auto",
