@@ -140,10 +140,27 @@ class TranscriptionHandler:
                         requests.Session = patched_session
 
                 try:
-                    # Fetch transcript
-                    transcript_list = ytt_api.fetch(
-                        video_id, languages=self.settings.youtube_api_languages
-                    )
+                    # Fetch transcript - try multiple language options
+                    transcript_list = None
+
+                    # Try English (auto-generated)
+                    try:
+                        transcript_list = ytt_api.fetch(
+                            video_id, languages=self.settings.youtube_api_languages
+                        )
+                    except Exception:
+                        pass
+
+                    # If still no transcript, try all available languages
+                    if transcript_list is None:
+                        try:
+                            # Try any manually created or generated transcripts
+                            transcript_list = ytt_api.fetch(video_id)
+                        except Exception:
+                            pass
+
+                    if transcript_list is None:
+                        raise YouTubeAPIError("No transcript available in any language")
                 finally:
                     # Restore original Session
                     if self.settings.youtube_api_use_cookies and cookie_string:
