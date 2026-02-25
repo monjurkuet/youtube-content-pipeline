@@ -17,26 +17,27 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 class OpenVINOWhisperTranscriber:
     """Whisper model using Intel OpenVINO for GPU acceleration on Intel Arc."""
 
-    # Pre-converted OpenVINO models for Intel GPU
+    # Pre-converted OpenVINO models from HuggingFace (Intel/OpenVINO official)
+    # Format: model_size -> (model_id, compute_type)
     OPENVINO_MODELS = {
-        "tiny": "openvino/whisper-tiny",
-        "base": "openvino/whisper-base",
-        "small": "openvino/whisper-small",
-        "medium": "openvino/whisper-medium",
-        "large-v2": "openvino/whisper-large-v2",
-        "large-v3": "openvino/whisper-large-v3",
+        "tiny": ("OpenVINO/whisper-tiny-int4-ov", "int4"),
+        "base": ("OpenVINO/whisper-base-fp16-ov", "fp16"),
+        "small": ("OpenVINO/whisper-small-fp16-ov", "fp16"),
+        "medium": ("OpenVINO/whisper-medium-int8-ov", "int8"),
+        "large-v2": ("OpenVINO/whisper-large-v2-fp16-ov", "fp16"),
+        "large-v3": ("OpenVINO/whisper-large-v3-fp16-ov", "fp16"),
     }
 
     def __init__(
         self,
-        model_id: str = "openai/whisper-base",
+        model_id: str = "openai/whisper-medium",
         device: str | None = None,
         cache_dir: str | None = None,
     ):
         """Initialize Whisper with OpenVINO.
 
         Args:
-            model_id: HuggingFace model ID for Whisper
+            model_id: HuggingFace model ID for Whisper (e.g., "openai/whisper-medium")
             device: Device to use (GPU, CPU, or AUTO)
             cache_dir: Model cache directory
         """
@@ -62,48 +63,67 @@ class OpenVINOWhisperTranscriber:
         print("   💻 No GPU detected, using CPU")
         return "CPU"
 
-    def _get_openvino_model_id(self, model_id: str) -> str:
-        """Get the OpenVINO-optimized model ID."""
-        base_name = model_id.replace("openai/", "")
-        if base_name in self.OPENVINO_MODELS:
-            return self.OPENVINO_MODELS[base_name]
-        return "openvino/whisper-base"
+    def _get_openvino_model_id(self, model_id: str) -> tuple[str, str]:
+        """Get the pre-converted OpenVINO model ID and compute type."""
+        # Extract base name from model_id (e.g., "openai/whisper-medium" -> "medium")
+        base_name = model_id.replace("openai/", "").replace("whisper-", "")
+
+        # Map to known sizes
+        size_map = {
+            "tiny": "tiny",
+            "base": "base",
+            "small": "small",
+            "medium": "medium",
+            "large-v2": "large-v2",
+            "large-v3": "large-v3",
+            "large-v3-turbo": "large-v3",
+        }
+
+        size = size_map.get(base_name, "base")
+
+        if size in self.OPENVINO_MODELS:
+            return self.OPENVINO_MODELS[size]
+
+        # Default to base if not found
+        return self.OPENVINO_MODELS["base"]
 
     def _load_model(self):
         """Load Whisper model with OpenVINO."""
         if self.model is not None:
             return
 
-        print(f"🔄 Loading Whisper model: {self.model_id}")
-        print(f"   Device: {self.device}")
-        print(f"   Cache: {self.cache_dir}")
+        # Get pre-converted model
+        ov_model_id, compute_type = self._get_openvino_model_id(self.model_id)
 
-        # Use the original model ID - optimum will convert if needed
-        print(f"   📦 Loading model with Optimum Intel...")
+        print(f"🔄 Loading OpenVINO Whisper: {self.model_id}")
+        print(f"   📦 Using pre-converted: {ov_model_id}")
+        print(f"   💾 Compute type: {compute_type}")
+        print(f"   🖥️  Device: {self.device}")
 
         try:
             from optimum.intel.openvino import OVModelForSpeechSeq2Seq
             from transformers import AutoProcessor
 
             # Load processor from original model
+            print(f"   📥 Loading processor...")
             self.processor = AutoProcessor.from_pretrained(
                 self.model_id,
                 cache_dir=self.cache_dir,
             )
 
-            # Try to load with export=True to convert on-the-fly
+            # Load pre-converted OpenVINO model
+            print(f"   📦 Loading OpenVINO model...")
             self.model = OVModelForSpeechSeq2Seq.from_pretrained(
-                self.model_id,
+                ov_model_id,
                 cache_dir=self.cache_dir,
                 device=self.device.lower(),
                 compile=False,
-                export=True,  # Force export to OpenVINO IR
             )
             print(f"   ✅ OpenVINO model loaded on {self.device}")
 
         except Exception as e:
             print(f"   ⚠️  OpenVINO failed: {e}")
-            print(f"   🔄 Falling back to PyTorch (CPU)...")
+            print(f"   🔄 Falling back to HuggingFace (CPU)...")
 
             # Fallback to CPU PyTorch
             from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
@@ -118,7 +138,7 @@ class OpenVINOWhisperTranscriber:
                 cache_dir=self.cache_dir,
             )
 
-            print(f"   ✅ PyTorch model loaded on CPU")
+            print(f"   ✅ HuggingFace model loaded on CPU")
 
     def transcribe(
         self,

@@ -333,8 +333,8 @@ class TranscriptionHandler:
             try:
                 from src.transcription.whisper_openvino_intel import OpenVINOWhisperTranscriber
 
-                # Use larger model on GPU - medium is a good balance
-                model_id = os.environ.get("WHISPER_MODEL", "openai/whisper-medium")
+                # Use small model on GPU - good balance of speed and quality
+                model_id = os.environ.get("WHISPER_MODEL", "openai/whisper-small")
 
                 print(f"   🎮 Using Intel GPU with OpenVINO ({model_id})...")
                 transcriber = OpenVINOWhisperTranscriber(
