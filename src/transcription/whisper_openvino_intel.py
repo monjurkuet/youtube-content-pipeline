@@ -44,7 +44,7 @@ class OpenVINOWhisperTranscriber:
         """
         self.model_id = model_id
         self.device = device or self._detect_device()
-        self.cache_dir = cache_dir or os.path.expanduser("~/.cache/huggingface")
+        self.cache_dir = cache_dir or os.path.expanduser("~/.cache/whisper_openvino")
 
         self.model = None
         self.processor = None
@@ -105,18 +105,33 @@ class OpenVINOWhisperTranscriber:
             from optimum.intel.openvino import OVModelForSpeechSeq2Seq
             from transformers import AutoProcessor
 
-            # Load processor from original model
+            # Load processor from original model first
             print(f"   📥 Loading processor...")
-            self.processor = AutoProcessor.from_pretrained(
-                self.model_id,
-                cache_dir=self.cache_dir,
-            )
+            try:
+                # Expand the cache directory if it contains ~
+                expanded_cache_dir = os.path.expanduser(self.cache_dir) if isinstance(self.cache_dir, str) and self.cache_dir.startswith("~") else self.cache_dir
+
+                self.processor = AutoProcessor.from_pretrained(
+                    self.model_id,
+                    cache_dir=expanded_cache_dir,
+                )
+            except (FileNotFoundError, OSError) as e:
+                # If the original model processor fails due to missing config files,
+                # try loading the processor from the OpenVINO model instead
+                print(f"   ⚠️  Original model processor failed: {e}")
+                print(f"   🔄 Trying OpenVINO model processor...")
+
+                self.processor = AutoProcessor.from_pretrained(
+                    ov_model_id,
+                    cache_dir=expanded_cache_dir,
+                )
+                print(f"   ✅ Loaded processor from OpenVINO model")
 
             # Load pre-converted OpenVINO model
             print(f"   📦 Loading OpenVINO model...")
             self.model = OVModelForSpeechSeq2Seq.from_pretrained(
                 ov_model_id,
-                cache_dir=self.cache_dir,
+                cache_dir=expanded_cache_dir,
                 device=self.device.lower(),
                 compile=False,
             )
@@ -129,14 +144,17 @@ class OpenVINOWhisperTranscriber:
             # Fallback to CPU PyTorch
             from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
 
+            # Expand the cache directory if it contains ~
+            expanded_cache_dir = os.path.expanduser(self.cache_dir) if isinstance(self.cache_dir, str) and self.cache_dir.startswith("~") else self.cache_dir
+
             self.processor = AutoProcessor.from_pretrained(
                 self.model_id,
-                cache_dir=self.cache_dir,
+                cache_dir=expanded_cache_dir,
             )
 
             self.model = AutoModelForSpeechSeq2Seq.from_pretrained(
                 self.model_id,
-                cache_dir=self.cache_dir,
+                cache_dir=expanded_cache_dir,
             )
 
             print(f"   ✅ HuggingFace model loaded on CPU")
@@ -226,7 +244,7 @@ class OpenVINOWhisperTranscriber:
 
 
 def create_openvino_whisper_transcriber(
-    model_id: str = "openai/whisper-base",
+    model_id: str = "openai/whisper-medium",
     device: str | None = None,
     cache_dir: str | None = None,
 ) -> OpenVINOWhisperTranscriber:
