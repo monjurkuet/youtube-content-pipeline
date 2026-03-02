@@ -1,11 +1,14 @@
 """Source-agnostic transcription handler with fallback chain."""
 
 import json
+import logging
 import os
 import random
 import re
+import shutil
 import subprocess
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
@@ -18,6 +21,7 @@ from src.core.schemas import RawTranscript, TranscriptSegment
 from src.video.cookie_manager import get_cookie_manager
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 # Error category type for structured error tracking
 ErrorCategory = Literal[
@@ -30,6 +34,101 @@ ErrorCategory = Literal[
     "live_stream",
     "unknown",
 ]
+
+# JS Runtime paths (bun is preferred for yt-dlp JS challenges)
+BUN_PATH = "/root/.bun/bin/bun"
+DENO_PATH = "/root/.deno/bin/deno"
+
+
+def _find_js_runtime(preferred: str = "bun") -> tuple[str, str] | None:
+    """
+    Find available JS runtime.
+
+    Args:
+        preferred: Preferred runtime ('bun' or 'deno')
+
+    Returns:
+        Tuple of (runtime_name, path) or None if not found
+    """
+    # Check preferred runtime first
+    if preferred == "bun":
+        bun_path = shutil.which("bun")
+        if bun_path:
+            return ("bun", bun_path)
+        if os.path.isfile(BUN_PATH) and os.access(BUN_PATH, os.X_OK):
+            return ("bun", BUN_PATH)
+
+    # Check deno
+    deno_path = shutil.which("deno")
+    if deno_path:
+        return ("deno", deno_path)
+    if os.path.isfile(DENO_PATH) and os.access(DENO_PATH, os.X_OK):
+        return ("deno", DENO_PATH)
+
+    # Check bun as fallback
+    if preferred != "bun":
+        bun_path = shutil.which("bun")
+        if bun_path:
+            return ("bun", bun_path)
+        if os.path.isfile(BUN_PATH) and os.access(BUN_PATH, os.X_OK):
+            return ("bun", BUN_PATH)
+
+    return None
+
+
+def _ensure_js_runtime() -> tuple[bool, str]:
+    """
+    Check if a JS runtime is available.
+
+    Returns:
+        Tuple of (success, message)
+    """
+    runtime = _find_js_runtime()
+    if runtime:
+        console.print(f"[dim]   {runtime[0].title()} found: {runtime[1]}[/dim]")
+        return (True, f"{runtime[0]} is available")
+
+    console.print("[yellow]   No JS runtime found.[/yellow]")
+    console.print("[dim]   Install bun: curl -fsSL https://bun.sh/install | bash[/dim]")
+    console.print("[dim]   Install deno: curl -fsSL https://deno.land/install.sh | sh[/dim]")
+    return (False, "No JS runtime available")
+
+
+def _get_yt_dlp_base_cmd(output_path: Path) -> list:
+    """
+    Build base yt-dlp command with recommended args for 2026 YouTube.
+
+    Args:
+        output_path: Output file path
+        js_runtime: JS runtime to use (deno or node)
+
+    Returns:
+        List of command line arguments
+    """
+    cmd = [
+        "yt-dlp",
+        "--extract-audio",
+        "--audio-format", "mp3",
+        "--audio-quality", "0",  # Best quality
+        "-o", str(output_path.with_suffix(".%(ext)s")),
+        "--no-playlist",
+        "--quiet",
+        "--no-warnings",
+        # Extractor args to bypass 403 errors (2026 YouTube updates)
+        "--extractor-args", "youtube:player_js_version=actual",
+        "--extractor-args", "youtube:player_client=default,web_safari",
+        # Reconnect args for stability
+        "--downloader-args", "ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+        # User agent to match browser
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    ]
+
+    # Add JS runtime (bun is preferred for YouTube JS challenges, fallback to deno)
+    runtime = _find_js_runtime(preferred="bun")
+    if runtime:
+        cmd.extend(["--js-runtimes", runtime[0]])
+
+    return cmd
 
 
 class TranscriptionHandler:
@@ -302,13 +401,22 @@ class TranscriptionHandler:
                 f"https://www.youtube.com/watch?v={video_id}",
             ]
 
-            # Add cookies if available
+            # Try with cookies first
+            result = None
             if self.cookie_manager.ensure_cookies():
                 cookie_args = self.cookie_manager.get_cookie_args()
                 if cookie_args:
-                    cmd.extend(cookie_args)
+                    cmd_with_cookies = cmd + cookie_args
+                    result = subprocess.run(cmd_with_cookies, capture_output=True, text=True, timeout=15)
 
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                    # Check if cookies caused "No video formats found" error
+                    if result.returncode != 0 and "No video formats found" in result.stderr:
+                        logger.warning("Cookies caused 'No video formats found' error in pre-flight check, retrying without cookies")
+                        result = None  # Will retry without cookies below
+
+            # If no cookies used or cookies failed, try without cookies
+            if result is None:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
 
             # Check stderr for errors
             if result.returncode != 0:
@@ -417,9 +525,9 @@ class TranscriptionHandler:
             elif "sign in" in error_lower or "log in" in error_lower or "account" in error_lower:
                 return "Access forbidden (sign in required)", "age_restricted"
             else:
-                # Default: treat as geo-restriction (permanent) to avoid wasting retries
-                # Most 403s without explicit temporary indicators are permanent
-                return "Access forbidden (likely geo-restricted)", "geo_restricted"
+                # Default: treat as temporary block (IP-level block from CDN)
+                # Allow retry with fresh cookies
+                return "Access forbidden (likely temporary IP block)", "temporary_block"
 
         # Copyright claims
         if "copyright claim" in error_lower or "contains content from" in error_lower:
@@ -434,12 +542,16 @@ class TranscriptionHandler:
 
     def _download_youtube_audio(self, video_id: str) -> Path:
         """Download audio from YouTube video using browser cookies."""
+        logger.info(f"Starting audio download for video: {video_id}")
+
         # Apply rate limiting
         self._apply_rate_limiting()
 
         # PRE-FLIGHT CHECK: Check video availability before attempting download
         console.print("[dim]   Checking video availability...[/dim]")
         is_available, reason, error_category = self._check_video_availability(video_id)
+
+        logger.info(f"Pre-flight check result: available={is_available}, reason={reason}, category={error_category}")
 
         if not is_available:
             error_msg = f"Pre-flight check failed: {reason}"
@@ -463,6 +575,9 @@ class TranscriptionHandler:
         output_path = self.work_dir / f"{video_id}_audio.mp3"
         url = f"https://www.youtube.com/watch?v={video_id}"
 
+        # Ensure JS runtime is available (bun preferred, deno fallback)
+        _ensure_js_runtime()
+
         # Define format fallback options
         format_options = [
             "bestaudio/best",  # Primary option
@@ -473,32 +588,20 @@ class TranscriptionHandler:
         # Try different format options with cookies first
         last_error = None
         last_error_category: ErrorCategory = "unknown"
+        consecutive_403_errors = 0  # Track consecutive 403 errors for IP block detection
 
         for format_option in format_options:
-            # Build command with current format option
-            cmd = [
-                "yt-dlp",
-                "-f",
-                format_option,
-                "--extract-audio",
-                "--audio-format",
-                self.settings.audio_format,
-                "--audio-quality",
-                self.settings.audio_bitrate,
-                "-o",
-                str(output_path.with_suffix(".%(ext)s")),
-                "--no-playlist",
-                "--quiet",
-                "--no-warnings",
-                "--js-runtimes",
-                "node",
-            ]
+            # Build command with current format option using base command
+            cmd = _get_yt_dlp_base_cmd(output_path)
+            cmd.insert(2, "-f")  # Insert format after yt-dlp
+            cmd.insert(3, format_option)
 
             # Add cookies from browser
             if self.cookie_manager.ensure_cookies():
                 cookie_args = self.cookie_manager.get_cookie_args()
                 if cookie_args:
                     cmd.extend(cookie_args)
+                    logger.info(f"Using cached cookies for audio download (format: {format_option})")
                     console.print(f"[dim]   Using browser cookies for audio download (format: {format_option})[/dim]")
 
             cmd.append(url)
@@ -524,6 +627,105 @@ class TranscriptionHandler:
                 last_error = error_detail
                 _, last_error_category = self._classify_error(error_detail)
 
+                # Check if cookies caused "No video formats found" error
+                if "No video formats found" in error_detail and "--cookies" in " ".join(cmd):
+                    logger.warning("Cookies caused 'No video formats found' error, retrying without cookies")
+                    console.print("[dim]   Cookies caused error, retrying without cookies...[/dim]")
+
+                    # Build command without cookies
+                    cmd_no_cookies = _get_yt_dlp_base_cmd(output_path)
+                    cmd_no_cookies.insert(2, "-f")
+                    cmd_no_cookies.insert(3, format_option)
+                    cmd_no_cookies.append(url)
+
+                    try:
+                        subprocess.run(cmd_no_cookies, check=True, timeout=300, capture_output=True, text=True)
+
+                        # Find the downloaded file
+                        for ext in [".mp3", ".m4a", ".wav", ".opus", ".webm"]:
+                            candidate = output_path.with_suffix(ext)
+                            if candidate.exists():
+                                return candidate
+
+                        # Check for any audio file in work_dir
+                        for f in self.work_dir.glob(f"{video_id}_audio.*"):
+                            if f.suffix in [".mp3", ".m4a", ".wav", ".opus", ".webm"]:
+                                return f
+
+                        raise WhisperError("Audio download completed but file not found")
+
+                    except subprocess.CalledProcessError as e2:
+                        # Update error detail with the no-cookies error
+                        last_error = e2.stderr if e2.stderr else str(e2)
+                        _, last_error_category = self._classify_error(last_error)
+
+                        # If the no-cookies retry got a 403, trigger 403 error handling
+                        if last_error_category == "temporary_block":
+                            consecutive_403_errors += 1
+                            timestamp = datetime.now().isoformat()
+                            logger.warning(f"403 error detected at {timestamp} (consecutive: {consecutive_403_errors})")
+                            logger.warning(f"403 error details: Access forbidden (likely temporary IP block)")
+                            logger.warning(f"403 error detail: {last_error[:200]}")
+                            console.print(f"[yellow]   403 error detected (consecutive: {consecutive_403_errors})[/yellow]")
+                            console.print(f"[yellow]   Details: Access forbidden (likely temporary IP block)[/yellow]")
+
+                            # Invalidate cookie cache and refresh
+                            logger.info("Invalidating cookie cache...")
+                            console.print("[yellow]   Invalidating cookie cache...[/yellow]")
+                            self.cookie_manager.invalidate_cache()
+
+                            logger.info("Waiting 5 seconds before refreshing cookies...")
+                            console.print("[yellow]   Waiting 5 seconds before refreshing cookies...[/yellow]")
+                            time.sleep(5)
+
+                            logger.info("Refreshing cookies from browser...")
+                            console.print("[yellow]   Refreshing cookies from browser...[/yellow]")
+                            refresh_success = self.cookie_manager.ensure_cookies()
+                            logger.info(f"Cookie refresh result: {refresh_success}")
+
+                            logger.info(f"Retrying with fresh cookies (attempt {consecutive_403_errors})...")
+                            console.print(f"[yellow]   Retrying with fresh cookies (attempt {consecutive_403_errors})...[/yellow]")
+                            continue
+
+                # Format availability error - try next format
+                if "Requested format is not available" in last_error or "format is not available" in last_error:
+                    console.print(f"[dim]   Format '{format_option}' not available, trying next option...[/dim]")
+                    continue
+
+                # Permanent errors - don't retry
+                if last_error_category in ["private", "members_only", "age_restricted", "geo_restricted", "live_stream", "unavailable"]:
+                    raise WhisperError(f"Permanent error: {last_error}") from e
+
+                # Temporary 403 - might be retryable with different cookies
+                if last_error_category == "temporary_block":
+                    consecutive_403_errors += 1
+                    timestamp = datetime.now().isoformat()
+                    logger.warning(f"403 error detected at {timestamp} (consecutive: {consecutive_403_errors})")
+                    logger.warning(f"403 error details: Access forbidden (likely temporary IP block)")
+                    logger.warning(f"403 error detail: {last_error[:200]}")
+                    console.print(f"[yellow]   403 error detected (consecutive: {consecutive_403_errors})[/yellow]")
+                    console.print(f"[yellow]   Details: Access forbidden (likely temporary IP block)[/yellow]")
+
+                    # Invalidate cookie cache and refresh
+                    logger.info("Invalidating cookie cache...")
+                    console.print("[yellow]   Invalidating cookie cache...[/yellow]")
+                    self.cookie_manager.invalidate_cache()
+
+                    logger.info("Waiting 5 seconds before refreshing cookies...")
+                    console.print("[yellow]   Waiting 5 seconds before refreshing cookies...[/yellow]")
+                    time.sleep(5)
+
+                    logger.info("Refreshing cookies from browser...")
+                    console.print("[yellow]   Refreshing cookies from browser...[/yellow]")
+                    refresh_success = self.cookie_manager.ensure_cookies()
+                    logger.info(f"Cookie refresh result: {refresh_success}")
+
+                    logger.info(f"Retrying with fresh cookies (attempt {consecutive_403_errors})...")
+                    console.print(f"[yellow]   Retrying with fresh cookies (attempt {consecutive_403_errors})...[/yellow]")
+                    continue
+
+                # Some other error, don't retry
+                raise WhisperError(f"Audio download failed: {last_error}") from e
                 # Check if this is a format availability error
                 if "Requested format is not available" in error_detail or "format is not available" in error_detail:
                     console.print(f"[dim]   Format '{format_option}' not available, trying next option...[/dim]")
@@ -536,9 +738,32 @@ class TranscriptionHandler:
                 if category in ["private", "members_only", "age_restricted", "geo_restricted", "live_stream", "unavailable"]:
                     raise WhisperError(f"{reason}: {error_detail}") from e
 
-                # Temporary 403 - might be retryable with different cookies
+                # Temporary 403 - refresh cookies and retry
                 if category == "temporary_block":
-                    console.print(f"[dim]   Temporary block detected, will retry with fresh cookies...[/dim]")
+                    consecutive_403_errors += 1
+                    timestamp = datetime.now().isoformat()
+                    logger.warning(f"403 error detected at {timestamp} (consecutive: {consecutive_403_errors})")
+                    logger.warning(f"403 error details: {reason}")
+                    logger.warning(f"403 error detail: {error_detail[:200]}")
+                    console.print(f"[yellow]   403 error detected (consecutive: {consecutive_403_errors})[/yellow]")
+                    console.print(f"[yellow]   Details: {reason}[/yellow]")
+
+                    # Invalidate cookie cache and refresh
+                    logger.info("Invalidating cookie cache...")
+                    console.print("[yellow]   Invalidating cookie cache...[/yellow]")
+                    self.cookie_manager.invalidate_cache()
+
+                    logger.info("Waiting 5 seconds before refreshing cookies...")
+                    console.print("[yellow]   Waiting 5 seconds before refreshing cookies...[/yellow]")
+                    time.sleep(5)
+
+                    logger.info("Refreshing cookies from browser...")
+                    console.print("[yellow]   Refreshing cookies from browser...[/yellow]")
+                    refresh_success = self.cookie_manager.ensure_cookies()
+                    logger.info(f"Cookie refresh result: {refresh_success}")
+
+                    logger.info(f"Retrying with fresh cookies (attempt {consecutive_403_errors})...")
+                    console.print(f"[yellow]   Retrying with fresh cookies (attempt {consecutive_403_errors})...[/yellow]")
                     continue
 
                 # Some other error, don't retry
@@ -548,6 +773,7 @@ class TranscriptionHandler:
                 raise WhisperError("Audio download timeout")
 
         # If all format options with cookies failed, try --cookies-from-browser
+        logger.info("Cookie file approach failed, trying --cookies-from-browser...")
         console.print("[dim]   Cookie file approach failed, trying --cookies-from-browser...[/dim]")
 
         # Try --cookies-from-browser with available browsers
@@ -555,29 +781,17 @@ class TranscriptionHandler:
         if not browsers_to_try:
             browsers_to_try = ["chrome"]  # Default fallback
 
-        for browser in browsers_to_try:
-            try:
-                browser_cmd = [
-                    "yt-dlp",
-                    "-f",
-                    "bestaudio/best",
-                    "--extract-audio",
-                    "--audio-format",
-                    self.settings.audio_format,
-                    "--audio-quality",
-                    self.settings.audio_bitrate,
-                    "-o",
-                    str(output_path.with_suffix(".%(ext)s")),
-                    "--no-playlist",
-                    "--quiet",
-                    "--no-warnings",
-                    "--js-runtimes",
-                    "node",
-                    "--cookies-from-browser",
-                    browser,
-                ]
+        logger.info(f"Available browsers for cookie extraction: {browsers_to_try}")
 
-                browser_cmd.append(url)
+        for browser in browsers_to_try:
+            logger.info(f"Trying --cookies-from-browser={browser}...")
+            try:
+                # Use base command with extractor args and --cookies-from-browser
+                browser_cmd = _get_yt_dlp_base_cmd(output_path)
+                browser_cmd.insert(2, "-f")
+                browser_cmd.insert(3, "bestaudio/best")
+                browser_cmd.extend(["--cookies-from-browser", browser])
+
                 console.print(f"[dim]   Trying --cookies-from-browser={browser}...[/dim]")
 
                 subprocess.run(browser_cmd, check=True, timeout=300, capture_output=True, text=True)
@@ -586,62 +800,56 @@ class TranscriptionHandler:
                 for ext in [".mp3", ".m4a", ".wav", ".opus", ".webm"]:
                     candidate = output_path.with_suffix(ext)
                     if candidate.exists():
+                        logger.info(f"Successfully downloaded audio using --cookies-from-browser={browser}")
                         console.print(f"[green]   Success with --cookies-from-browser={browser}![/green]")
                         return candidate
 
                 # Check for any audio file in work_dir
                 for f in self.work_dir.glob(f"{video_id}_audio.*"):
                     if f.suffix in [".mp3", ".m4a", ".wav", ".opus", ".webm"]:
+                        logger.info(f"Successfully downloaded audio using --cookies-from-browser={browser}")
                         console.print(f"[green]   Success with --cookies-from-browser={browser}![/green]")
                         return f
 
             except subprocess.CalledProcessError as e:
+                logger.warning(f"--cookies-from-browser={browser} failed: {e.stderr[:200] if e.stderr else str(e)}")
                 console.print(f"[dim]   --cookies-from-browser={browser} failed, trying next...[/dim]")
                 continue
             except subprocess.TimeoutExpired:
+                logger.warning(f"--cookies-from-browser={browser} timed out")
                 console.print(f"[dim]   --cookies-from-browser={browser} timed out...[/dim]")
                 continue
 
-        # Final attempt without cookies
+        # Final attempt without cookies (with extractor args for 2026 YouTube)
+        logger.info("All cookie-based methods failed, trying without cookies...")
         console.print("[dim]   --cookies-from-browser failed, trying without cookies...[/dim]")
 
-        final_cmd = [
-            "yt-dlp",
-            "-f",
-            "bestaudio/best",
-            "--extract-audio",
-            "--audio-format",
-            self.settings.audio_format,
-            "--audio-quality",
-            self.settings.audio_bitrate,
-            "-o",
-            str(output_path.with_suffix(".%(ext)s")),
-            "--no-playlist",
-            "--quiet",
-            "--no-warnings",
-            "--js-runtimes",
-            "node",
-        ]
-
+        final_cmd = _get_yt_dlp_base_cmd(output_path)
+        final_cmd.insert(2, "-f")
+        final_cmd.insert(3, "bestaudio/best")
         final_cmd.append(url)  # No cookies added
 
         try:
+            logger.info("Attempting download without cookies...")
             subprocess.run(final_cmd, check=True, timeout=300, capture_output=True, text=True)
 
             # Find the downloaded file
             for ext in [".mp3", ".m4a", ".wav", ".opus", ".webm"]:
                 candidate = output_path.with_suffix(ext)
                 if candidate.exists():
+                    logger.info(f"Successfully downloaded audio without cookies: {candidate}")
                     return candidate
 
             # Check for any audio file in work_dir
             for f in self.work_dir.glob(f"{video_id}_audio.*"):
                 if f.suffix in [".mp3", ".m4a", ".wav", ".opus", ".webm"]:
+                    logger.info(f"Successfully downloaded audio without cookies: {f}")
                     return f
 
             raise WhisperError("Audio download completed but file not found")
 
         except subprocess.TimeoutExpired:
+            logger.error(f"Audio download timeout for video {video_id}")
             raise WhisperError("Audio download timeout")
         except subprocess.CalledProcessError as e:
             error_detail = e.stderr if e.stderr else str(e)
@@ -649,17 +857,24 @@ class TranscriptionHandler:
             # Classify the error
             reason, category = self._classify_error(error_detail)
 
+            logger.error(f"Final download attempt failed: {reason} (category: {category})")
+            logger.error(f"Error detail: {error_detail[:300]}")
+
             # Permanent errors
             if category in ["private", "members_only", "age_restricted", "geo_restricted", "live_stream", "unavailable"]:
                 raise WhisperError(f"{reason}: {error_detail}") from e
 
             # If even the no-cookies attempt failed, raise the original error
             if last_error:
+                logger.error(f"All download methods failed. Tried cookies, browser cookies, and no cookies.")
+                logger.error(f"Last error: {last_error[:200]}")
+                logger.error(f"Final error: {error_detail[:200]}")
                 raise WhisperError(
                     f"Audio download failed: {last_error} "
                     f"(also tried without cookies: {error_detail})"
                 ) from e
             else:
+                logger.error(f"Download failed: {error_detail[:200]}")
                 raise WhisperError(f"Audio download failed: {error_detail}") from e
 
     def _transcribe_with_whisper(self, audio_path: str) -> RawTranscript:

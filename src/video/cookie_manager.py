@@ -2,12 +2,14 @@
 
 import contextlib
 import json
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from rich.console import Console
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 
 class YouTubeCookieManager:
@@ -72,16 +74,20 @@ class YouTubeCookieManager:
         console.print(
             "[yellow]   Cookies missing or expired, auto-extracting from Chrome...[/yellow]"
         )
+        logger.info("Cookies missing or expired, attempting auto-extraction from Chrome...")
 
         try:
             success = self._extract_cookies()
             if success:
+                logger.info("Successfully extracted and cached cookies")
                 console.print("[green]   ✓ Successfully extracted and cached cookies[/green]")
                 return True
             else:
+                logger.error("Cookie extraction failed")
                 console.print("[red]   ✗ Cookie extraction failed[/red]")
                 return False
         except Exception as e:
+            logger.error(f"Error during cookie extraction: {e}")
             console.print(f"[red]   ✗ Error during cookie extraction: {e}[/red]")
             return False
 
@@ -116,6 +122,51 @@ class YouTubeCookieManager:
             return float("inf")
         return age.total_seconds() / 3600
 
+    def _get_chrome_profiles(self) -> list[Path]:
+        """
+        Get all available Chrome profile directories.
+
+        Returns:
+            List of profile directory paths
+        """
+        import platform
+
+        profiles = []
+
+        try:
+            system = platform.system()
+
+            if system == "Linux":
+                chrome_config = Path.home() / ".config" / "google-chrome"
+            elif system == "Darwin":  # macOS
+                chrome_config = Path.home() / "Library" / "Application Support" / "Google" / "Chrome"
+            elif system == "Windows":
+                chrome_config = Path.home() / "AppData" / "Local" / "Google" / "Chrome" / "User Data"
+            else:
+                logger.warning(f"Unsupported platform: {system}")
+                return profiles
+
+            if not chrome_config.exists():
+                logger.warning(f"Chrome config directory not found: {chrome_config}")
+                return profiles
+
+            # Find all profile directories
+            for profile_dir in chrome_config.iterdir():
+                if profile_dir.is_dir() and profile_dir.name.startswith("Profile ") or profile_dir.name == "Default":
+                    # Check if this profile has a Cookies database
+                    cookies_db = profile_dir / "Network" / "Cookies"
+                    if not cookies_db.exists():
+                        cookies_db = profile_dir / "Cookies"
+
+                    if cookies_db.exists():
+                        profiles.append(profile_dir)
+
+        except Exception as e:
+            logger.error(f"Error detecting Chrome profiles: {e}")
+
+        logger.info(f"Found {len(profiles)} Chrome profile(s)")
+        return profiles
+
     def _extract_cookies(self) -> bool:
         """Extract cookies from Chrome and save."""
         try:
@@ -127,7 +178,72 @@ class YouTubeCookieManager:
             # Ensure directory exists
             self.cookie_file.parent.mkdir(parents=True, exist_ok=True)
 
-            # Extract cookies from Chrome
+            # Get available Chrome profiles
+            profiles = self._get_chrome_profiles()
+
+            # Try each profile until we find one with auth cookies
+            for profile in profiles:
+                try:
+                    logger.info(f"Trying Chrome profile: {profile.name}")
+
+                    # Extract cookies from this specific profile
+                    # Note: profile_dir parameter may not be supported on all platforms
+                    try:
+                        cj = browser_cookie3.chrome(domain_name=".youtube.com", profile_dir=str(profile))
+                        cj_google = browser_cookie3.chrome(domain_name=".google.com", profile_dir=str(profile))
+                    except TypeError:
+                        # profile_dir not supported on this platform/browser_cookie3 version
+                        logger.warning(f"profile_dir parameter not supported, falling back to default Chrome extraction")
+                        console.print("[yellow]   Profile selection not supported, using default Chrome profile[/yellow]")
+                        break
+
+                    for cookie in cj_google:
+                        cj.set_cookie(cookie)
+
+                    # Check for important auth cookies
+                    important = ["LOGIN_INFO", "SSID", "APISID", "SAPISID", "HSID"]
+                    found_important = [c.name for c in cj if c.name in important]
+
+                    # Count cookies
+                    youtube_cookies = [c for c in cj if "youtube" in c.domain]
+                    google_cookies = [c for c in cj if "google" in c.domain]
+
+                    logger.info(f"Profile {profile.name}: {len(youtube_cookies)} YouTube cookies, {len(google_cookies)} Google cookies")
+
+                    # Only use this profile if it has auth cookies
+                    if found_important:
+                        logger.info(f"Using profile '{profile.name}' with auth cookies: {found_important}")
+
+                        # Save in Mozilla format
+                        mozilla_jar = MozillaCookieJar(str(self.cookie_file))
+                        for cookie in cj:
+                            mozilla_jar.set_cookie(cookie)
+
+                        mozilla_jar.save(ignore_discard=True, ignore_expires=True)
+
+                        # Save metadata
+                        metadata = {
+                            "extracted_at": datetime.now().isoformat(),
+                            "youtube_count": len(youtube_cookies),
+                            "google_count": len(google_cookies),
+                            "auth_cookies": found_important,
+                            "has_auth": len(found_important) > 0,
+                            "profile_used": profile.name,
+                        }
+                        self._save_metadata(metadata)
+
+                        logger.info(f"Successfully extracted cookies from profile '{profile.name}'")
+                        return True
+                    else:
+                        logger.info(f"Profile '{profile.name}' has no auth cookies, trying next profile...")
+                        continue
+
+                except Exception as e:
+                    logger.warning(f"Failed to extract from profile '{profile.name}': {e}")
+                    continue
+
+            # No profile with auth cookies found, try default Chrome extraction
+            logger.info("No profile with auth cookies found, trying default Chrome extraction...")
             cj = browser_cookie3.chrome(domain_name=".youtube.com")
 
             # Also get google.com cookies for authentication
@@ -157,11 +273,16 @@ class YouTubeCookieManager:
                 "google_count": len(google_cookies),
                 "auth_cookies": found_important,
                 "has_auth": len(found_important) > 0,
+                "profile_used": "default",
             }
             self._save_metadata(metadata)
 
+            logger.info(f"Extracted {len(youtube_cookies)} YouTube cookies and {len(google_cookies)} Google cookies from default profile")
+            logger.info(f"Auth cookies found: {found_important}")
+
             # Warn if no auth cookies
             if not found_important:
+                logger.warning("No authentication cookies found - user may not be logged into YouTube")
                 console.print(
                     "[yellow]   ⚠ Warning: No authentication cookies found![/yellow]\n"
                     "[yellow]      Make sure you're logged into YouTube in Chrome.[/yellow]"
@@ -268,8 +389,10 @@ class YouTubeCookieManager:
                 self.cookie_file.unlink()
             if self.metadata_file.exists():
                 self.metadata_file.unlink()
+            logger.info("Cookie cache invalidated")
             console.print("[yellow]   Cookie cache invalidated[/yellow]")
         except Exception as e:
+            logger.error(f"Error invalidating cache: {e}")
             console.print(f"[red]   Error invalidating cache: {e}[/red]")
 
     def get_available_browsers(self) -> list[str]:
