@@ -124,6 +124,15 @@ uv run python -m src.cli channel transcribe-pending @ChartChampions --all
 
 # Transcribe ALL pending videos in custom batch sizes (recommended)
 uv run python -m src.cli channel transcribe-pending @ChartChampions --all --batch-size 20
+
+# Retry failed transcriptions from a specific channel
+uv run python -m src.cli channel retry-failed @ChartChampions
+
+# Retry ALL failed transcriptions at once
+uv run python -m src.cli channel retry-failed @ChartChampions --all
+
+# Reset failed status to pending without immediate retry
+uv run python -m src.cli channel retry-failed @ChartChampions --reset
 ```
 
 ### Transcribe All Videos from Channels
@@ -145,6 +154,12 @@ uv run python -m src.cli channel transcribe-pending --batch-size 10
 
 # Transcribe from specific channel
 uv run python -m src.cli channel transcribe-pending @ChartChampions --batch-size 10
+
+# Retry failed transcriptions
+uv run python -m src.cli channel retry-failed @ChartChampions --batch-size 10
+
+# Check channel videos by status
+uv run python -m src.cli channel videos @ChartChampions --status failed
 ```
 
 ### Full Workflow: Add Channel → Sync → Transcribe All

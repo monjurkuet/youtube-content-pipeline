@@ -208,6 +208,86 @@ def get_pending_videos(
     ]
 
 
+def get_failed_videos(
+    channel_id: str | None = None, db_manager=None
+) -> list[VideoMetadataDocument]:
+    """
+    Get videos with failed transcription status.
+
+    Args:
+        channel_id: Optional channel ID filter
+        db_manager: Optional MongoDB manager instance
+
+    Returns:
+        List of VideoMetadataDocument objects
+    """
+    import asyncio
+    from datetime import datetime
+    from src.database import MongoDBManager
+
+    async def _fetch():
+        async with MongoDBManager() as db:
+            return await db.get_failed_transcription_videos(channel_id)
+
+    failed = asyncio.run(_fetch())
+
+    return [
+        VideoMetadataDocument(
+            video_id=v["video_id"],
+            channel_id=v["channel_id"],
+            title=v["title"],
+            description=v.get("description"),
+            thumbnail_url=v.get("thumbnail_url"),
+            duration_seconds=v.get("duration_seconds"),
+            view_count=v.get("view_count"),
+            published_at=datetime.fromisoformat(v["published_at"])
+            if v.get("published_at")
+            else None,
+            transcript_status=v["transcript_status"],
+            transcript_id=v.get("transcript_id"),
+            synced_at=datetime.fromisoformat(v["synced_at"])
+            if v.get("synced_at")
+            else datetime.utcnow(),
+        )
+        for v in failed
+    ]
+
+
+def reset_failed_transcription(
+    video_id: str,
+    db_manager=None,
+) -> bool:
+    """
+    Reset failed transcription status to pending for retry.
+
+    Args:
+        video_id: Video ID
+        db_manager: Optional MongoDB manager instance
+
+    Returns:
+        True if successful
+    """
+    import asyncio
+    from datetime import datetime
+    from src.database import MongoDBManager
+
+    async def _reset():
+        async with MongoDBManager() as db:
+            result = await db.video_metadata.update_one(
+                {"video_id": video_id},
+                {
+                    "$set": {
+                        "transcript_status": "pending",
+                        "transcript_error": None,  # Clear error message
+                        "updated_at": datetime.utcnow().isoformat()
+                    }
+                },
+            )
+            return result.modified_count > 0
+
+    return asyncio.run(_reset())
+
+
 def mark_video_transcribed(
     video_id: str,
     transcript_id: str,

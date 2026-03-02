@@ -337,25 +337,38 @@ asyncio.run(stats())
 ### **Retry Failed Videos**
 
 ```bash
-# Mark failed videos as pending (to retry)
-uv run python -c "
-from src.database import get_db_manager
-import asyncio
-db = get_db_manager()
-async def retry_failed():
-    failed = await db.get_pending_transcription_videos()
-    print(f'Found {len(failed)} failed videos')
-    # Note: You can manually update status if needed
-asyncio.run(retry_failed())
-"
+# Retry failed transcriptions from a specific channel
+uv run python -m src.cli channel retry-failed @ChartChampions
+
+# Retry failed transcriptions from ALL channels
+uv run python -m src.cli channel retry-failed
+
+# Retry with custom batch size
+uv run python -m src.cli channel retry-failed @ChartChampions --batch-size 10
+
+# Retry ALL failed videos at once
+uv run python -m src.cli channel retry-failed @ChartChampions --all
+
+# Reset failed status to pending without immediate retry
+uv run python -m src.cli channel retry-failed @ChartChampions --reset
 ```
-db = get_db_manager()
-async def check():
-    videos = await db.list_videos_by_channel('UCHOP_YfwdMk5hpxbugzC1wA', limit=100)
-    with_dates = sum(1 for v in videos if v.get('published_at'))
-    print(f'Videos with dates: {with_dates}/100 ({100*with_dates/100:.0f}%)')
-asyncio.run(check())
-"
+
+### **Command Options**
+
+| Command | Description | Best For |
+|---------|-------------|----------|
+| `retry-failed @Channel` | Retry 5 failed videos (default) | Quick fixes |
+| `retry-failed @Channel --batch-size 20` | Retry 20 failed videos | Bulk retry |
+| `retry-failed @Channel --all` | Retry ALL failed videos | Complete retry |
+| `retry-failed @Channel --reset` | Reset status only, no retry | Prepare for later |
+
+### **Status Management**
+```bash
+# Check failed videos before retrying
+uv run python -m src.cli channel videos @ChartChampions --status failed
+
+# Check progress after retry
+uv run python -m src.cli channel videos @ChartChampions --status failed --limit 5
 ```
 
 ### **Check What's Pending:**

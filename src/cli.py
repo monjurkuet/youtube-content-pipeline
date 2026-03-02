@@ -297,7 +297,7 @@ def channel_add(
 
     from src.channel import resolve_channel_handle
     from src.channel.schemas import ChannelDocument
-    from src.database import get_db_manager
+    from src.database import MongoDBManager
 
     try:
         rprint(f"\n[bold blue]Adding channel: {handle}[/bold blue]\n")
@@ -305,23 +305,22 @@ def channel_add(
         # Resolve channel handle
         channel_id, channel_url = resolve_channel_handle(handle)
 
-        # Save to database
-        db = get_db_manager()
-        channel_doc = ChannelDocument(
-            channel_id=channel_id,
-            channel_handle=handle.lstrip("@"),
-            channel_title=handle,
-            channel_url=channel_url,
-        )
-
+        # Save to database using context manager
         async def _save():
-            return await db.save_channel(channel_doc)
+            async with MongoDBManager() as db:
+                channel_doc = ChannelDocument(
+                    channel_id=channel_id,
+                    channel_handle=handle.lstrip("@"),
+                    channel_title=handle,
+                    channel_url=channel_url,
+                )
+                return await db.save_channel(channel_doc)
 
         doc_id = asyncio.run(_save())
 
         rprint("[green]✓ Channel added successfully![/green]")
         rprint(f"   Channel ID: {channel_id}")
-        rprint(f"   Handle: @{channel_doc.channel_handle}")
+        rprint(f"   Handle: @{handle.lstrip('@')}")
         rprint(f"   URL: {channel_url}")
         rprint(f"   Database ID: {doc_id[:16]}...\n")
 
@@ -589,13 +588,12 @@ def channel_list():
     """List all tracked channels."""
     import asyncio
 
-    from src.database import get_db_manager
+    from src.database import MongoDBManager
 
     try:
-        db = get_db_manager()
-
         async def _fetch():
-            return await db.list_channels()
+            async with MongoDBManager() as db:
+                return await db.list_channels()
 
         channels = asyncio.run(_fetch())
 
@@ -692,39 +690,38 @@ def channel_videos(
     """List videos from a tracked channel."""
     import asyncio
 
-    from src.database import get_db_manager
+    from src.database import MongoDBManager
 
     try:
-        # Get channel and videos in a single async context
-        db = get_db_manager()
-
         async def _fetch_all():
-            # Try to find by handle
-            channel = await db.channels.find_one({"channel_handle": handle.lstrip("@")})
-            if not channel:
-                # Try to find by channel_id if handle is actually a channel ID
-                channel = await db.channels.find_one({"channel_id": handle})
+            # Use context manager to properly initialize the database
+            async with MongoDBManager() as db:
+                # Try to find by handle
+                channel = await db.channels.find_one({"channel_handle": handle.lstrip("@")})
+                if not channel:
+                    # Try to find by channel_id if handle is actually a channel ID
+                    channel = await db.channels.find_one({"channel_id": handle})
 
-            if not channel:
-                return None, []
+                if not channel:
+                    return None, []
 
-            channel_id = channel["channel_id"]
+                channel_id = channel["channel_id"]
 
-            if status:
-                # Filter by status
-                query = {"channel_id": channel_id}
-                if status != "all":
-                    query["transcript_status"] = status
-                cursor = db.video_metadata.find(query).sort("published_at", -1).limit(limit)
-                results = []
-                async for doc in cursor:
-                    if "_id" in doc:
-                        doc["_id"] = str(doc["_id"])
-                    results.append(doc)
-                return channel, results
-            else:
-                videos = await db.list_videos_by_channel(channel_id, limit=limit)
-                return channel, videos
+                if status:
+                    # Filter by status
+                    query = {"channel_id": channel_id}
+                    if status != "all":
+                        query["transcript_status"] = status
+                    cursor = db.video_metadata.find(query).sort("published_at", -1).limit(limit)
+                    results = []
+                    async for doc in cursor:
+                        if "_id" in doc:
+                            doc["_id"] = str(doc["_id"])
+                        results.append(doc)
+                    return channel, results
+                else:
+                    videos = await db.list_videos_by_channel(channel_id, limit=limit)
+                    return channel, videos
 
         channel, videos = asyncio.run(_fetch_all())
 
@@ -1009,6 +1006,273 @@ def channel_transcribe_pending(
         raise typer.Exit(1) from e
 
 
+@channel_app.command("retry-failed")
+def channel_retry_failed(
+    handle: str | None = typer.Argument(
+        None, help="Channel handle (optional, retry all if not specified)"
+    ),
+    batch_size: int | None = typer.Option(
+        None,
+        "-b",
+        "--batch-size",
+        help="Number of videos to retry per batch (default: from config.yaml)",
+    ),
+    all_videos: bool = typer.Option(
+        False, "--all", "-a", help="Retry ALL failed videos (no limit)"
+    ),
+    reset_only: bool = typer.Option(
+        False, "--reset", help="Reset status to pending only, don't retry now"
+    ),
+):
+    """Retry failed transcriptions from channel.
+
+    Resets failed transcription status to pending and optionally transcribes them.
+    Batch size defaults to config.yaml setting (default: 5).
+    Use --reset to only reset status without immediate retry.
+    """
+    import asyncio
+    import json
+    import subprocess
+    from datetime import datetime
+    from typing import Any
+
+    from src.channel import get_failed_videos, resolve_channel_handle
+    from src.core.config import get_settings_with_yaml
+    from src.pipeline import get_transcript
+    from src.database import MongoDBManager
+
+    # Load settings from config.yaml
+    settings = get_settings_with_yaml()
+
+    # Use CLI batch_size if provided, otherwise use config
+    if batch_size is None:
+        batch_size = settings.batch_default_size
+
+    def check_video_availability(video_id: str) -> tuple[bool, str]:
+        """
+        Check if video is available for transcription using yt-dlp.
+
+        Returns:
+            Tuple of (is_available, reason)
+        """
+        try:
+            # Use --flat-playlist for faster metadata-only check
+            cmd = [
+                "yt-dlp",
+                "--flat-playlist",
+                "--dump-json",
+                "--no-warnings",
+                "--quiet",
+                f"https://www.youtube.com/watch?v={video_id}",
+            ]
+
+            from src.video.cookie_manager import YouTubeCookieManager
+            cookie_manager = YouTubeCookieManager(auto_extract=True)
+            cookie_manager.ensure_cookies()
+            cookie_args = cookie_manager.get_cookie_args()
+            cmd.extend(cookie_args)
+
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+
+            # Check stderr for errors
+            if result.returncode != 0:
+                error_msg = result.stderr.strip().lower()
+                if "live event" in error_msg or "upcoming" in error_msg:
+                    return False, "Live stream (upcoming)"
+                elif "private" in error_msg:
+                    return False, "Video is private"
+                elif "unavailable" in error_msg or "not available" in error_msg:
+                    return False, "Video unavailable"
+                elif "members-only" in error_msg or "join" in error_msg:
+                    return False, "Members-only video"
+                elif "age" in error_msg and "restricted" in error_msg:
+                    return False, "Age-restricted"
+                else:
+                    return False, f"Video error: {result.stderr.strip()[:50]}"
+
+            if not result.stdout.strip():
+                return False, "No video metadata"
+
+            data = json.loads(result.stdout.strip())
+
+            # Check for live stream indicators
+            live_status = data.get("live_status")
+            if live_status in ["is_live", "is_upcoming", "post_live"]:
+                return False, f"Live stream ({live_status})"
+
+            # Check availability field
+            availability = data.get("availability")
+            if availability in ["private", "unavailable"]:
+                return False, f"Video {availability}"
+
+            # Check for basic metadata (if we have title, it's likely playable)
+            if not data.get("title"):
+                return False, "Missing video title"
+
+            return True, "Available"
+
+        except subprocess.TimeoutExpired:
+            return False, "Timeout checking video"
+        except json.JSONDecodeError:
+            return False, "Invalid video metadata"
+        except Exception as e:
+            return False, f"Check failed: {str(e)[:50]}"
+
+    try:
+        channel_id = None
+        channel_handle = "all channels"
+
+        if handle:
+            channel_id, _ = resolve_channel_handle(handle)
+            channel_handle = f"@{handle.lstrip('@')}"
+
+        rprint(f"\n[bold blue]Retrying failed transcriptions from {channel_handle}[/bold blue]\n")
+
+        # Get failed videos
+        failed = get_failed_videos(channel_id)
+
+        if not failed:
+            rprint("[green]✓ No failed transcriptions to retry![/green]\n")
+            return
+
+        # Determine how many to process
+        if all_videos:
+            num_to_process = len(failed)
+            msg = f"[yellow]⚠ Processing ALL {len(failed)} failed transcriptions"
+            msg += " (this may take a while)[/yellow]"
+            rprint(msg)
+            if batch_size < len(failed):
+                rprint(f"[dim]Processing in batches of {batch_size}[/dim]\n")
+            else:
+                rprint("[dim]Processing all at once[/dim]\n")
+        else:
+            num_to_process = min(batch_size, len(failed))
+            rprint(f"[dim]Processing {num_to_process} video(s) (use --all to process all)[/dim]\n")
+
+        rprint(f"Found {len(failed)} failed transcription(s), processing {num_to_process}...\n")
+
+        if reset_only:
+            # Just reset status to pending
+            rprint("[dim]Resetting failed status to pending...[/dim]\n")
+
+            async def reset_all():
+                for i, video in enumerate(failed[:num_to_process], 1):
+                    rprint(f"[dim]{i}/{num_to_process}[/dim] {video.title[:50]}... resetting")
+
+                    # Reset status to pending using context manager
+                    async with MongoDBManager() as db:
+                        result = await db.video_metadata.update_one(
+                            {"video_id": video.video_id},
+                            {
+                                "$set": {
+                                    "transcript_status": "pending",
+                                    "transcript_error": None,  # Clear error message
+                                    "updated_at": datetime.utcnow().isoformat()
+                                }
+                            },
+                        )
+                        if result.modified_count > 0:
+                            rprint(f"  [green]✓ Reset to pending: {video.video_id}[/green]")
+                        else:
+                            rprint(f"  [red]✗ Failed to reset: {video.video_id}[/red]")
+
+            asyncio.run(reset_all())
+            rprint(f"\n[green]✓ Reset {num_to_process} videos to pending status[/green]\n")
+            return
+
+        # Actually retry the transcriptions
+        successes = 0
+        failures = 0
+        skipped = 0
+
+        async def process_all():
+            nonlocal successes, failures, skipped
+
+            for i, video in enumerate(failed[:num_to_process], 1):
+                rprint(f"[dim]{i}/{num_to_process}[/dim] {video.title[:50]}...")
+
+                # Apply rate limiting delay between videos
+                if i > 1 and settings.rate_limiting_enabled:
+                    import random
+
+                    delay = random.uniform(
+                        settings.rate_limiting_min_delay, settings.rate_limiting_max_delay
+                    )
+                    rprint(f"  [dim]Rate limiting: waiting {delay:.1f}s...[/dim]")
+                    await asyncio.sleep(delay)
+
+                # Check video availability first
+                rprint("  [dim]Checking availability...[/dim]")
+                is_available, reason = check_video_availability(video.video_id)
+
+                if not is_available:
+                    rprint(f"  [yellow]⊘ Skipped: {reason}[/yellow]")
+                    skipped += 1
+
+                    # Mark as failed with reason using context manager
+                    async with MongoDBManager() as db:
+                        await db.mark_transcript_failed(video.video_id, reason)
+                    continue
+
+                try:
+                    # Transcribe video synchronously (OpenVINO is not thread-safe)
+                    rprint("  [dim]Starting transcription retry...[/dim]")
+                    video_url = f"https://www.youtube.com/watch?v={video.video_id}"
+
+                    # Run transcription synchronously - OpenVINO Whisper crashes in threads
+                    # due to longjmp/setjmp stack frame issues
+                    get_transcript(video_url, save_to_db=True)
+
+                    # Get transcript ID and mark as completed using context manager
+                    # Add retry logic in case DB write hasn't completed yet
+                    transcript = None
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        async with MongoDBManager() as db:
+                            transcript = await db.get_transcript(video.video_id)
+                        if transcript:
+                            break
+                        if attempt < max_retries - 1:
+                            msg = "  [dim]   Waiting for DB write to complete "
+                            msg += f"(attempt {attempt + 1}/{max_retries})...[/dim]"
+                            rprint(msg)
+                            await asyncio.sleep(0.5 * (attempt + 1))
+
+                    if transcript:
+                        async with MongoDBManager() as db:
+                            await db.mark_transcript_completed(video.video_id, transcript["_id"])
+                        rprint("  [green]✓ Retried and marked complete[/green]")
+                        successes += 1
+                    else:
+                        msg = "  [yellow]⚠ Retried but transcript not found "
+                        msg += f"in DB after {max_retries} attempts[/yellow]"
+                        rprint(msg)
+                        successes += 1
+
+                except Exception as e:
+                    error_msg = str(e)[:100]
+                    rprint(f"  [red]✗ Error: {escape(str(e))}[/red]")
+                    failures += 1
+
+                    # Mark as failed with error message using context manager
+                    async with MongoDBManager() as db:
+                        await db.mark_transcript_failed(video.video_id, error_msg)
+
+        asyncio.run(process_all())
+
+        # Summary
+        rprint("\n[bold]Retry Complete[/bold]")
+        rprint(f"  [green]Successes: {successes}[/green]")
+        rprint(f"  [red]Failures: {failures}[/red]")
+        if skipped > 0:
+            rprint(f"  [yellow]Skipped: {skipped}[/yellow]")
+        rprint()
+
+    except Exception as e:
+        rprint(f"[red]✗ Error: {escape(str(e))}[/red]")
+        raise typer.Exit(1) from e
+
+
 @channel_app.command("remove")
 def channel_remove(
     handle: str = typer.Argument(..., help="Channel handle to remove"),
@@ -1018,7 +1282,7 @@ def channel_remove(
     import asyncio
 
     from src.channel import resolve_channel_handle
-    from src.database import get_db_manager
+    from src.database import MongoDBManager
 
     try:
         # Resolve channel handle
@@ -1031,10 +1295,9 @@ def channel_remove(
                 rprint("[yellow]Cancelled[/yellow]")
                 return
 
-        db = get_db_manager()
-
         async def _delete():
-            return await db.delete_channel(channel_id)
+            async with MongoDBManager() as db:
+                return await db.delete_channel(channel_id)
 
         deleted = asyncio.run(_delete())
 

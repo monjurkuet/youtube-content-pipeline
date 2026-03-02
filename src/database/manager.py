@@ -382,6 +382,35 @@ class MongoDBManager:
 
         return results
 
+    async def get_failed_transcription_videos(
+        self,
+        channel_id: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Get videos with failed transcription status.
+
+        Args:
+            channel_id: Optional channel ID filter
+            limit: Maximum results to return
+
+        Returns:
+            List of video metadata documents with failed status
+        """
+        await self.initialize()
+        query = {"transcript_status": "failed"}
+        if channel_id:
+            query["channel_id"] = channel_id
+
+        cursor = self.video_metadata.find(query).sort("published_at", -1).limit(limit)
+
+        results = []
+        async for doc in cursor:
+            if "_id" in doc:
+                doc["_id"] = str(doc["_id"])
+            results.append(doc)
+
+        return results
+
     async def mark_transcript_completed(
         self,
         video_id: str,
