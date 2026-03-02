@@ -1023,12 +1023,25 @@ def channel_retry_failed(
     reset_only: bool = typer.Option(
         False, "--reset", help="Reset status to pending only, don't retry now"
     ),
+    category: str | None = typer.Option(
+        None,
+        "-c",
+        "--category",
+        help="Filter by error category (geo_restricted, members_only, age_restricted, temporary_block, private, unavailable). Auto-retries temporary_block if not specified.",
+    ),
+    skip_permanent: bool = typer.Option(
+        False,
+        "--skip-permanent",
+        help="Skip permanent failures (geo_restricted, members_only, private) - only retry temporary blocks",
+    ),
 ):
     """Retry failed transcriptions from channel.
 
     Resets failed transcription status to pending and optionally transcribes them.
     Batch size defaults to config.yaml setting (default: 5).
     Use --reset to only reset status without immediate retry.
+    Use --category to retry specific error types.
+    Use --skip-permanent to only retry temporary blocks.
     """
     import asyncio
     import json
@@ -1048,12 +1061,12 @@ def channel_retry_failed(
     if batch_size is None:
         batch_size = settings.batch_default_size
 
-    def check_video_availability(video_id: str) -> tuple[bool, str]:
+    def check_video_availability(video_id: str) -> tuple[bool, str, str]:
         """
         Check if video is available for transcription using yt-dlp.
 
         Returns:
-            Tuple of (is_available, reason)
+            Tuple of (is_available, reason, error_category)
         """
         try:
             # Use --flat-playlist for faster metadata-only check
@@ -1077,46 +1090,54 @@ def channel_retry_failed(
             # Check stderr for errors
             if result.returncode != 0:
                 error_msg = result.stderr.strip().lower()
+                error_detail = result.stderr.strip()
+
                 if "live event" in error_msg or "upcoming" in error_msg:
-                    return False, "Live stream (upcoming)"
+                    return False, "Live stream (upcoming)", "live_stream"
                 elif "private" in error_msg:
-                    return False, "Video is private"
+                    return False, "Video is private", "private"
                 elif "unavailable" in error_msg or "not available" in error_msg:
-                    return False, "Video unavailable"
+                    return False, "Video unavailable", "unavailable"
                 elif "members-only" in error_msg or "join" in error_msg:
-                    return False, "Members-only video"
+                    return False, "Members-only video", "members_only"
                 elif "age" in error_msg and "restricted" in error_msg:
-                    return False, "Age-restricted"
+                    return False, "Age-restricted", "age_restricted"
+                elif "geo" in error_msg or "country" in error_msg or "not available in your region" in error_msg:
+                    return False, "Geo-restricted", "geo_restricted"
+                elif "403" in error_msg and "forbidden" in error_msg:
+                    return False, "Access forbidden (403)", "temporary_block"
                 else:
-                    return False, f"Video error: {result.stderr.strip()[:50]}"
+                    return False, f"Video error: {error_detail[:50]}", "unknown"
 
             if not result.stdout.strip():
-                return False, "No video metadata"
+                return False, "No video metadata", "unavailable"
 
             data = json.loads(result.stdout.strip())
 
             # Check for live stream indicators
             live_status = data.get("live_status")
             if live_status in ["is_live", "is_upcoming", "post_live"]:
-                return False, f"Live stream ({live_status})"
+                return False, f"Live stream ({live_status})", "live_stream"
 
             # Check availability field
             availability = data.get("availability")
-            if availability in ["private", "unavailable"]:
-                return False, f"Video {availability}"
+            if availability == "private":
+                return False, "Video is private", "private"
+            elif availability == "unavailable":
+                return False, "Video unavailable", "unavailable"
 
             # Check for basic metadata (if we have title, it's likely playable)
             if not data.get("title"):
-                return False, "Missing video title"
+                return False, "Missing video title", "unavailable"
 
-            return True, "Available"
+            return True, "Available", "unknown"
 
         except subprocess.TimeoutExpired:
-            return False, "Timeout checking video"
+            return False, "Timeout checking video", "unknown"
         except json.JSONDecodeError:
-            return False, "Invalid video metadata"
+            return False, "Invalid video metadata", "unknown"
         except Exception as e:
-            return False, f"Check failed: {str(e)[:50]}"
+            return False, f"Check failed: {str(e)[:50]}", "unknown"
 
     try:
         channel_id = None
@@ -1133,6 +1154,33 @@ def channel_retry_failed(
 
         if not failed:
             rprint("[green]✓ No failed transcriptions to retry![/green]\n")
+            return
+
+        # Filter by error category if specified
+        permanent_categories = {"geo_restricted", "members_only", "private", "unavailable"}
+        retryable_categories = {"temporary_block", "age_restricted", "unknown"}
+
+        if skip_permanent:
+            # Only retry temporary blocks and other retryable errors
+            original_count = len(failed)
+            failed = [
+                v for v in failed
+                if getattr(v, "transcript_error_category", None) in retryable_categories
+                or not getattr(v, "transcript_error_category", None)
+            ]
+            rprint(f"[dim]   Skipped {original_count - len(failed)} permanent failures[/dim]\n")
+
+        if category:
+            original_count = len(failed)
+            failed = [
+                v for v in failed
+                if getattr(v, "transcript_error_category", None) == category
+            ]
+            rprint(f"[dim]   Filtered to {len(failed)} videos with category '{category}' "
+                   f"(skipped {original_count - len(failed)})[/dim]\n")
+
+        if not failed:
+            rprint("[yellow]✓ No failed videos match the filter criteria![/yellow]\n")
             return
 
         # Determine how many to process
@@ -1203,15 +1251,15 @@ def channel_retry_failed(
 
                 # Check video availability first
                 rprint("  [dim]Checking availability...[/dim]")
-                is_available, reason = check_video_availability(video.video_id)
+                is_available, reason, error_category = check_video_availability(video.video_id)
 
                 if not is_available:
                     rprint(f"  [yellow]⊘ Skipped: {reason}[/yellow]")
                     skipped += 1
 
-                    # Mark as failed with reason using context manager
+                    # Mark as failed with reason and category using context manager
                     async with MongoDBManager() as db:
-                        await db.mark_transcript_failed(video.video_id, reason)
+                        await db.mark_transcript_failed(video.video_id, reason, error_category)
                     continue
 
                 try:
@@ -1254,9 +1302,24 @@ def channel_retry_failed(
                     rprint(f"  [red]✗ Error: {escape(str(e))}[/red]")
                     failures += 1
 
-                    # Mark as failed with error message using context manager
+                    # Classify error category from exception message
+                    error_lower = str(e).lower()
+                    if "geo" in error_lower or "country" in error_lower or "region" in error_lower:
+                        fail_category = "geo_restricted"
+                    elif "members" in error_lower or "join" in error_lower:
+                        fail_category = "members_only"
+                    elif "age" in error_lower or "restricted" in error_lower:
+                        fail_category = "age_restricted"
+                    elif "private" in error_lower:
+                        fail_category = "private"
+                    elif "403" in error_lower or "forbidden" in error_lower:
+                        fail_category = "temporary_block"
+                    else:
+                        fail_category = "unknown"
+
+                    # Mark as failed with error message and category using context manager
                     async with MongoDBManager() as db:
-                        await db.mark_transcript_failed(video.video_id, error_msg)
+                        await db.mark_transcript_failed(video.video_id, error_msg, fail_category)
 
         asyncio.run(process_all())
 

@@ -33,6 +33,8 @@ class VideoMetadataDocument(BaseModel):
     published_at: datetime | None = None
     transcript_status: Literal["pending", "completed", "failed"] = "pending"
     transcript_id: str | None = None
+    transcript_error: str | None = None
+    transcript_error_category: str | None = None
     synced_at: datetime = Field(default_factory=datetime.utcnow)
 
     def model_dump_for_mongo(self) -> dict[str, Any]:

@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     audio_bitrate: str = "128k"
 
     # OpenVINO / Whisper Settings
-    openvino_whisper_model: str = "openai/whisper-base"
+    openvino_whisper_model: str = "openai/whisper-medium"
     openvino_device: str = "AUTO"  # AUTO, GPU, CPU
     openvino_cache_dir: str = "~/.cache/whisper_openvino"
     whisper_chunk_length: int = 30  # seconds

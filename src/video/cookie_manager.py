@@ -202,6 +202,23 @@ class YouTubeCookieManager:
             return ["--cookies", str(self.cookie_file)]
         return []
 
+    def get_cookies_from_browser_args(self, browser: str = "chrome") -> list:
+        """
+        Get yt-dlp command line arguments for --cookies-from-browser.
+
+        Args:
+            browser: Browser name (chrome, firefox, edge, brave, opera)
+
+        Returns:
+            List of command line arguments for browser cookie extraction
+        """
+        valid_browsers = ["chrome", "firefox", "edge", "brave", "opera"]
+        if browser.lower() not in valid_browsers:
+            console.print(f"[yellow]   Invalid browser '{browser}', using chrome[/yellow]")
+            browser = "chrome"
+
+        return ["--cookies-from-browser", browser]
+
     def get_cookies_dict(self) -> dict[str, str] | None:
         """
         Get cookies as a dictionary for use with requests/httpx.
@@ -254,6 +271,47 @@ class YouTubeCookieManager:
             console.print("[yellow]   Cookie cache invalidated[/yellow]")
         except Exception as e:
             console.print(f"[red]   Error invalidating cache: {e}[/red]")
+
+    def get_available_browsers(self) -> list[str]:
+        """
+        Check which browsers have cookies available.
+
+        Returns:
+            List of browser names that have YouTube/Google cookies
+        """
+        available = []
+        browsers_to_check = ["chrome", "firefox", "edge", "brave", "opera"]
+
+        try:
+            import browser_cookie3
+
+            for browser in browsers_to_check:
+                try:
+                    # Try to get cookies from this browser
+                    if browser == "chrome":
+                        cj = browser_cookie3.chrome(domain_name=".youtube.com")
+                    elif browser == "firefox":
+                        cj = browser_cookie3.firefox(domain_name=".youtube.com")
+                    elif browser == "edge":
+                        cj = browser_cookie3.edge(domain_name=".youtube.com")
+                    elif browser == "brave":
+                        cj = browser_cookie3.brave(domain_name=".youtube.com")
+                    elif browser == "opera":
+                        cj = browser_cookie3.opera(domain_name=".youtube.com")
+                    else:
+                        continue
+
+                    # Check if we have any YouTube cookies
+                    youtube_cookies = [c for c in cj if "youtube" in c.domain]
+                    if youtube_cookies:
+                        available.append(browser)
+                except Exception:
+                    # Browser not installed or no cookies
+                    pass
+        except ImportError:
+            pass
+
+        return available
 
     def get_status(self) -> dict:
         """Get current cookie status for debugging."""

@@ -441,12 +441,16 @@ class MongoDBManager:
         self,
         video_id: str,
         error_message: str | None = None,
+        error_category: str | None = None,
     ) -> bool:
         """Mark video transcription as failed.
 
         Args:
             video_id: Video identifier
             error_message: Optional error message
+            error_category: Optional category for structured error tracking.
+                Valid values: geo_restricted, members_only, age_restricted,
+                temporary_block, private, unavailable
 
         Returns:
             True if successful
@@ -455,6 +459,8 @@ class MongoDBManager:
         update = {"$set": {"transcript_status": "failed"}}
         if error_message:
             update["$set"]["transcript_error"] = error_message
+        if error_category:
+            update["$set"]["transcript_error_category"] = error_category
 
         result = await self.video_metadata.update_one(
             {"video_id": video_id},

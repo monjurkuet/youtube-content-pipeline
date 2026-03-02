@@ -1,11 +1,13 @@
 """Source-agnostic transcription handler with fallback chain."""
 
+import json
 import os
 import random
 import re
 import subprocess
 import time
 from pathlib import Path
+from typing import Literal
 
 import torch
 from rich.console import Console
@@ -16,6 +18,18 @@ from src.core.schemas import RawTranscript, TranscriptSegment
 from src.video.cookie_manager import get_cookie_manager
 
 console = Console()
+
+# Error category type for structured error tracking
+ErrorCategory = Literal[
+    "geo_restricted",
+    "members_only",
+    "age_restricted",
+    "temporary_block",
+    "private",
+    "unavailable",
+    "live_stream",
+    "unknown",
+]
 
 
 class TranscriptionHandler:
@@ -265,16 +279,333 @@ class TranscriptionHandler:
             if audio_path.exists():
                 audio_path.unlink()
 
+    def _check_video_availability(self, video_id: str) -> tuple[bool, str, ErrorCategory]:
+        """
+        Check if video is available for transcription using yt-dlp.
+
+        This is a pre-flight check to avoid wasting download attempts on
+        permanently unavailable videos.
+
+        Args:
+            video_id: YouTube video ID
+
+        Returns:
+            Tuple of (is_available, reason, error_category)
+        """
+        try:
+            cmd = [
+                "yt-dlp",
+                "--flat-playlist",
+                "--dump-json",
+                "--no-warnings",
+                "--quiet",
+                f"https://www.youtube.com/watch?v={video_id}",
+            ]
+
+            # Add cookies if available
+            if self.cookie_manager.ensure_cookies():
+                cookie_args = self.cookie_manager.get_cookie_args()
+                if cookie_args:
+                    cmd.extend(cookie_args)
+
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+
+            # Check stderr for errors
+            if result.returncode != 0:
+                error_msg = result.stderr.strip().lower()
+                error_detail = result.stderr.strip()
+
+                # Classify the error
+                if "live event" in error_msg or "upcoming" in error_msg:
+                    return False, "Live stream (upcoming)", "live_stream"
+                elif "private" in error_msg:
+                    return False, "Video is private", "private"
+                elif "unavailable" in error_msg or "not available" in error_msg:
+                    return False, "Video unavailable", "unavailable"
+                elif "members-only" in error_msg or "join this channel" in error_msg:
+                    return False, "Members-only video", "members_only"
+                elif "age" in error_msg and ("restricted" in error_msg or "verification" in error_msg):
+                    return False, "Age-restricted", "age_restricted"
+                elif "geo" in error_msg or "country" in error_msg or "not available in your region" in error_msg:
+                    return False, "Geo-restricted", "geo_restricted"
+                elif "403" in error_msg and "forbidden" in error_msg:
+                    # Could be temporary or permanent
+                    return False, "Access forbidden (403)", "temporary_block"
+                else:
+                    return False, f"Video error: {error_detail[:50]}", "unknown"
+
+            if not result.stdout.strip():
+                return False, "No video metadata", "unavailable"
+
+            data = json.loads(result.stdout.strip())
+
+            # Check for live stream indicators
+            live_status = data.get("live_status")
+            if live_status in ["is_live", "is_upcoming", "post_live"]:
+                return False, f"Live stream ({live_status})", "live_stream"
+
+            # Check availability field
+            availability = data.get("availability")
+            if availability == "private":
+                return False, "Video is private", "private"
+            elif availability == "unavailable":
+                return False, "Video unavailable", "unavailable"
+
+            # Check for members-only content
+            if data.get("is_members_only") or "members-only" in str(data).lower():
+                return False, "Members-only video", "members_only"
+
+            # Check for basic metadata (if we have title, it's likely playable)
+            if not data.get("title"):
+                return False, "Missing video title", "unavailable"
+
+            return True, "Available", "unknown"
+
+        except subprocess.TimeoutExpired:
+            return False, "Timeout checking video", "unknown"
+        except json.JSONDecodeError:
+            return False, "Invalid video metadata", "unknown"
+        except Exception as e:
+            return False, f"Check failed: {str(e)[:50]}", "unknown"
+
+    def _classify_error(self, error_detail: str) -> tuple[str, ErrorCategory]:
+        """
+        Classify yt-dlp error into structured categories.
+
+        Args:
+            error_detail: Error message from yt-dlp stderr
+
+        Returns:
+            Tuple of (human_readable_reason, error_category)
+        """
+        error_lower = error_detail.lower()
+
+        # Private videos
+        if "private video" in error_lower or "video is private" in error_lower:
+            return "Video is private", "private"
+
+        # Unavailable videos
+        if "this video is unavailable" in error_lower or "video unavailable" in error_lower:
+            return "Video unavailable", "unavailable"
+
+        # Members-only content
+        members_patterns = ["members-only", "join this channel", "channel members", "only available for members", "members only"]
+        if any(pattern in error_lower for pattern in members_patterns):
+            return "Members-only video", "members_only"
+
+        # Age-restricted content
+        if "age-restricted" in error_lower or "age verification" in error_lower or "sign in" in error_lower:
+            return "Age-restricted (sign in required)", "age_restricted"
+
+        # Geo-restriction - check for various patterns
+        geo_patterns = [
+            "geo",
+            "country",
+            "not available in your region",
+            "not available in this country",
+            "restricted in your country",
+        ]
+        if any(pattern in error_lower for pattern in geo_patterns):
+            return "Geo-restricted content", "geo_restricted"
+
+        # HTTP 403 Forbidden - could be temporary or permanent
+        if "403" in error_lower and "forbidden" in error_lower:
+            # Try to distinguish temporary vs permanent
+            if any(pattern in error_lower for pattern in geo_patterns):
+                return "Access forbidden (geo-restricted)", "geo_restricted"
+            # Check for signs this might be a temporary/sign-in issue
+            elif "sign in" in error_lower or "log in" in error_lower or "account" in error_lower:
+                return "Access forbidden (sign in required)", "age_restricted"
+            else:
+                # Default: treat as geo-restriction (permanent) to avoid wasting retries
+                # Most 403s without explicit temporary indicators are permanent
+                return "Access forbidden (likely geo-restricted)", "geo_restricted"
+
+        # Copyright claims
+        if "copyright claim" in error_lower or "contains content from" in error_lower:
+            return "Copyright claim", "unavailable"
+
+        # Live streams
+        if "live event" in error_lower or "upcoming" in error_lower or "premiere" in error_lower:
+            return "Live stream or premiere", "live_stream"
+
+        # Default - unknown (might be retryable)
+        return f"Download error: {error_detail[:100]}", "unknown"
+
     def _download_youtube_audio(self, video_id: str) -> Path:
         """Download audio from YouTube video using browser cookies."""
         # Apply rate limiting
         self._apply_rate_limiting()
 
+        # PRE-FLIGHT CHECK: Check video availability before attempting download
+        console.print("[dim]   Checking video availability...[/dim]")
+        is_available, reason, error_category = self._check_video_availability(video_id)
+
+        if not is_available:
+            error_msg = f"Pre-flight check failed: {reason}"
+            console.print(f"[yellow]   {error_msg}[/yellow]")
+            # Raise appropriate error based on category
+            if error_category == "geo_restricted":
+                raise WhisperError(f"Geo-restricted: {reason}")
+            elif error_category == "members_only":
+                raise WhisperError(f"Members-only: {reason}")
+            elif error_category == "age_restricted":
+                raise WhisperError(f"Age-restricted: {reason}")
+            elif error_category == "private":
+                raise WhisperError(f"Private video: {reason}")
+            elif error_category == "live_stream":
+                raise WhisperError(f"Live stream: {reason}")
+            else:
+                raise WhisperError(error_msg)
+
+        console.print(f"[dim]   Video available: {reason}[/dim]")
+
         output_path = self.work_dir / f"{video_id}_audio.mp3"
         url = f"https://www.youtube.com/watch?v={video_id}"
 
-        # Build command
-        cmd = [
+        # Define format fallback options
+        format_options = [
+            "bestaudio/best",  # Primary option
+            "bestaudio",       # Fallback without /best restriction
+            "m4a/mp3/aac/opus/m4r/flac/wav",  # Specific audio formats
+        ]
+
+        # Try different format options with cookies first
+        last_error = None
+        last_error_category: ErrorCategory = "unknown"
+
+        for format_option in format_options:
+            # Build command with current format option
+            cmd = [
+                "yt-dlp",
+                "-f",
+                format_option,
+                "--extract-audio",
+                "--audio-format",
+                self.settings.audio_format,
+                "--audio-quality",
+                self.settings.audio_bitrate,
+                "-o",
+                str(output_path.with_suffix(".%(ext)s")),
+                "--no-playlist",
+                "--quiet",
+                "--no-warnings",
+                "--js-runtimes",
+                "node",
+            ]
+
+            # Add cookies from browser
+            if self.cookie_manager.ensure_cookies():
+                cookie_args = self.cookie_manager.get_cookie_args()
+                if cookie_args:
+                    cmd.extend(cookie_args)
+                    console.print(f"[dim]   Using browser cookies for audio download (format: {format_option})[/dim]")
+
+            cmd.append(url)
+
+            try:
+                result = subprocess.run(cmd, check=True, timeout=300, capture_output=True, text=True)
+
+                # Find the downloaded file (may have different extension)
+                for ext in [".mp3", ".m4a", ".wav", ".opus", ".webm"]:
+                    candidate = output_path.with_suffix(ext)
+                    if candidate.exists():
+                        return candidate
+
+                # Check for any audio file in work_dir
+                for f in self.work_dir.glob(f"{video_id}_audio.*"):
+                    if f.suffix in [".mp3", ".m4a", ".wav", ".opus", ".webm"]:
+                        return f
+
+                raise WhisperError("Audio download completed but file not found")
+
+            except subprocess.CalledProcessError as e:
+                error_detail = e.stderr if e.stderr else str(e)
+                last_error = error_detail
+                _, last_error_category = self._classify_error(error_detail)
+
+                # Check if this is a format availability error
+                if "Requested format is not available" in error_detail or "format is not available" in error_detail:
+                    console.print(f"[dim]   Format '{format_option}' not available, trying next option...[/dim]")
+                    continue
+
+                # Classify and handle the error
+                reason, category = self._classify_error(error_detail)
+
+                # Permanent errors - don't retry
+                if category in ["private", "members_only", "age_restricted", "geo_restricted", "live_stream", "unavailable"]:
+                    raise WhisperError(f"{reason}: {error_detail}") from e
+
+                # Temporary 403 - might be retryable with different cookies
+                if category == "temporary_block":
+                    console.print(f"[dim]   Temporary block detected, will retry with fresh cookies...[/dim]")
+                    continue
+
+                # Some other error, don't retry
+                raise WhisperError(f"Audio download failed: {error_detail}") from e
+
+            except subprocess.TimeoutExpired:
+                raise WhisperError("Audio download timeout")
+
+        # If all format options with cookies failed, try --cookies-from-browser
+        console.print("[dim]   Cookie file approach failed, trying --cookies-from-browser...[/dim]")
+
+        # Try --cookies-from-browser with available browsers
+        browsers_to_try = self.cookie_manager.get_available_browsers()
+        if not browsers_to_try:
+            browsers_to_try = ["chrome"]  # Default fallback
+
+        for browser in browsers_to_try:
+            try:
+                browser_cmd = [
+                    "yt-dlp",
+                    "-f",
+                    "bestaudio/best",
+                    "--extract-audio",
+                    "--audio-format",
+                    self.settings.audio_format,
+                    "--audio-quality",
+                    self.settings.audio_bitrate,
+                    "-o",
+                    str(output_path.with_suffix(".%(ext)s")),
+                    "--no-playlist",
+                    "--quiet",
+                    "--no-warnings",
+                    "--js-runtimes",
+                    "node",
+                    "--cookies-from-browser",
+                    browser,
+                ]
+
+                browser_cmd.append(url)
+                console.print(f"[dim]   Trying --cookies-from-browser={browser}...[/dim]")
+
+                subprocess.run(browser_cmd, check=True, timeout=300, capture_output=True, text=True)
+
+                # Find the downloaded file
+                for ext in [".mp3", ".m4a", ".wav", ".opus", ".webm"]:
+                    candidate = output_path.with_suffix(ext)
+                    if candidate.exists():
+                        console.print(f"[green]   Success with --cookies-from-browser={browser}![/green]")
+                        return candidate
+
+                # Check for any audio file in work_dir
+                for f in self.work_dir.glob(f"{video_id}_audio.*"):
+                    if f.suffix in [".mp3", ".m4a", ".wav", ".opus", ".webm"]:
+                        console.print(f"[green]   Success with --cookies-from-browser={browser}![/green]")
+                        return f
+
+            except subprocess.CalledProcessError as e:
+                console.print(f"[dim]   --cookies-from-browser={browser} failed, trying next...[/dim]")
+                continue
+            except subprocess.TimeoutExpired:
+                console.print(f"[dim]   --cookies-from-browser={browser} timed out...[/dim]")
+                continue
+
+        # Final attempt without cookies
+        console.print("[dim]   --cookies-from-browser failed, trying without cookies...[/dim]")
+
+        final_cmd = [
             "yt-dlp",
             "-f",
             "bestaudio/best",
@@ -292,19 +623,12 @@ class TranscriptionHandler:
             "node",
         ]
 
-        # Add cookies from browser
-        if self.cookie_manager.ensure_cookies():
-            cookie_args = self.cookie_manager.get_cookie_args()
-            if cookie_args:
-                cmd.extend(cookie_args)
-                console.print("[dim]   Using browser cookies for audio download[/dim]")
-
-        cmd.append(url)
+        final_cmd.append(url)  # No cookies added
 
         try:
-            subprocess.run(cmd, check=True, timeout=300, capture_output=True, text=True)
+            subprocess.run(final_cmd, check=True, timeout=300, capture_output=True, text=True)
 
-            # Find the downloaded file (may have different extension)
+            # Find the downloaded file
             for ext in [".mp3", ".m4a", ".wav", ".opus", ".webm"]:
                 candidate = output_path.with_suffix(ext)
                 if candidate.exists():
@@ -317,11 +641,26 @@ class TranscriptionHandler:
 
             raise WhisperError("Audio download completed but file not found")
 
-        except subprocess.TimeoutExpired as e:
-            raise WhisperError("Audio download timeout") from e
+        except subprocess.TimeoutExpired:
+            raise WhisperError("Audio download timeout")
         except subprocess.CalledProcessError as e:
             error_detail = e.stderr if e.stderr else str(e)
-            raise WhisperError(f"Audio download failed: {error_detail}") from e
+
+            # Classify the error
+            reason, category = self._classify_error(error_detail)
+
+            # Permanent errors
+            if category in ["private", "members_only", "age_restricted", "geo_restricted", "live_stream", "unavailable"]:
+                raise WhisperError(f"{reason}: {error_detail}") from e
+
+            # If even the no-cookies attempt failed, raise the original error
+            if last_error:
+                raise WhisperError(
+                    f"Audio download failed: {last_error} "
+                    f"(also tried without cookies: {error_detail})"
+                ) from e
+            else:
+                raise WhisperError(f"Audio download failed: {error_detail}") from e
 
     def _transcribe_with_whisper(self, audio_path: str) -> RawTranscript:
         """Transcribe audio file using faster-whisper or OpenVINO."""
@@ -333,8 +672,8 @@ class TranscriptionHandler:
             try:
                 from src.transcription.whisper_openvino_intel import OpenVINOWhisperTranscriber
 
-                # Use small model on GPU - good balance of speed and quality
-                model_id = os.environ.get("WHISPER_MODEL", "openai/whisper-small")
+                # Use medium model on GPU - optimal for Intel Arc A770 capabilities
+                model_id = os.environ.get("WHISPER_MODEL", "openai/whisper-medium")
 
                 print(f"   🎮 Using Intel GPU with OpenVINO ({model_id})...")
                 transcriber = OpenVINOWhisperTranscriber(
@@ -419,43 +758,10 @@ class TranscriptionHandler:
         except Exception as e:
             print(f"   ⚠️  faster-whisper failed ({e})")
 
-            # Last resort: try OpenVINO (old method)
-            try:
-                # Import with alias to avoid LSP warning
-                from src.transcription import whisper_openvino as legacy_whisper
-
-                OpenVINOWhisperTranscriber = legacy_whisper.OpenVINOWhisperTranscriber
-
-                transcriber = OpenVINOWhisperTranscriber(
-                    model_id=self.settings.openvino_whisper_model,
-                    device=self.settings.openvino_device,
-                    cache_dir=self.settings.openvino_cache_dir,
-                )
-
-                result = transcriber.transcribe(
-                    audio_path,
-                    language="en",
-                    chunk_length=self.settings.whisper_chunk_length,
-                )
-
-                segments = [
-                    TranscriptSegment(
-                        text=result["text"],
-                        start=0.0,
-                        duration=0.0,
-                    )
-                ]
-
-                return RawTranscript(
-                    video_id="",
-                    segments=segments,
-                    source="whisper",
-                    language=result.get("language", "en"),
-                )
-            except Exception as e3:
-                raise WhisperError(
-                    f"All Whisper methods failed: intel_openvino, faster-whisper={e}, openvino={e3}"
-                ) from e3
+            # No more fallbacks available
+            raise WhisperError(
+                f"All Whisper methods failed: intel_openvino, faster-whisper={e}"
+            ) from e
 
     def _check_intel_gpu(self) -> bool:
         """Check if Intel GPU is available."""

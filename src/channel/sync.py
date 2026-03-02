@@ -245,6 +245,8 @@ def get_failed_videos(
             else None,
             transcript_status=v["transcript_status"],
             transcript_id=v.get("transcript_id"),
+            transcript_error=v.get("transcript_error"),
+            transcript_error_category=v.get("transcript_error_category"),
             synced_at=datetime.fromisoformat(v["synced_at"])
             if v.get("synced_at")
             else datetime.utcnow(),
