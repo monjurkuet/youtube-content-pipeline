@@ -84,8 +84,62 @@ def sync_channel(
     else:
         videos_fetched = fetch_videos(channel_id, channel_url, "recent")
 
-    if not videos_fetched:
+    # In incremental mode, no new videos is a success (channel already synced)
+    # In other modes, no videos fetched means something went wrong
+    if not videos_fetched and not incremental:
         raise RuntimeError("No videos fetched from channel")
+
+    # Handle empty videos list in incremental mode - need to get existing video count from DB
+    if not videos_fetched and incremental:
+        console.print("[yellow]No new videos to sync, updating channel record only...[/yellow]")
+        # Get existing video count from database
+        import asyncio
+
+        async def _get_existing_count():
+            from src.database import MongoDBManager
+
+            async with MongoDBManager() as db:
+                videos = await db.list_videos_by_channel(channel_id, limit=1)
+                # Get total count
+                count = await db.video_metadata.count_documents({"channel_id": channel_id})
+                return count
+
+        existing_count = asyncio.run(_get_existing_count())
+
+        async def _save_channel_only():
+            from src.database import MongoDBManager
+
+            async with MongoDBManager() as db:
+                # Get existing channel to preserve title
+                existing_channel = await db.get_channel(channel_id)
+                channel_title = (
+                    existing_channel.get("channel_title") if existing_channel else handle.lstrip("@") if handle else channel_id
+                )
+
+                channel_doc = ChannelDocument(
+                    channel_id=channel_id,
+                    channel_handle=handle.lstrip("@") if handle else channel_id,
+                    channel_title=channel_title,
+                    channel_url=channel_url,
+                    last_synced=datetime.utcnow(),
+                    total_videos_tracked=existing_count,
+                    sync_mode=mode if mode in ("recent", "all") else "recent",
+                )
+                return await db.save_channel(channel_doc)
+
+        channel_db_id = asyncio.run(_save_channel_only())
+        console.print(f"[green]✓ Channel updated (ID: {channel_db_id[:16]}...)[/green]")
+        console.print(f"[green]✓ Channel already in sync ({existing_count} videos)[/green]")
+
+        return SyncResult(
+            channel_id=channel_id,
+            channel_handle=handle.lstrip("@") if handle else channel_id,
+            channel_title=handle.lstrip("@") if handle else channel_id,
+            sync_mode=mode if mode in ("recent", "all") else "recent",
+            videos_fetched=0,
+            videos_new=0,
+            videos_existing=existing_count,
+        )
 
     # Save channel and videos to database in a single async context
     import asyncio
