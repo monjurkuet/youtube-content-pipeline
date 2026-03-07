@@ -76,7 +76,10 @@ uv run python -m src.cli channel transcribe-pending @ChartChampions --batch-size
 uv run python -m src.cli channel add @ChartChampions
 uv run python -m src.cli channel add @ECKrown
 
-# Sync videos
+# Sync videos from all channels at once (RECOMMENDED)
+uv run python -m src.cli channel sync-all --all --incremental
+
+# Or sync individually (slower)
 uv run python -m src.cli channel sync @ChartChampions --all --max-videos 500
 uv run python -m src.cli channel sync @ECKrown --all --max-videos 500
 
@@ -157,6 +160,33 @@ uv run python -m src.cli channel sync @ChartChampions --all --max-videos 2000
 | 500 | ~11 minutes |
 | 1,000 | ~22 minutes |
 | 1,768 | ~38 minutes |
+
+---
+
+### **4. Sync All Channels** 🌐
+Sync all tracked channels at once:
+
+```bash
+# Sync all channels with latest videos (RSS)
+uv run python -m src.cli channel sync-all
+
+# Sync all channels with all videos
+uv run python -m src.cli channel sync-all --all
+
+# Incremental sync (only new videos)
+uv run python -m src.cli channel sync-all --all --incremental
+
+# Dry run (show what would sync)
+uv run python -m src.cli channel sync-all --dry-run
+```
+
+**Options:**
+- `--all`: Fetch ALL videos (yt-dlp)
+- `--incremental` / `-i`: Only fetch NEW videos (smart sync)
+- `--max-videos N`: Maximum videos per channel
+- `--dry-run`: Preview without syncing
+
+**Best for:** Regular maintenance of all channels
 
 ---
 
