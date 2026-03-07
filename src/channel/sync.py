@@ -1,5 +1,6 @@
 """Channel sync module - syncs channel videos to database."""
 
+import asyncio
 from datetime import datetime
 
 from rich.console import Console
@@ -14,6 +15,28 @@ console = Console()
 
 # Global cookie manager instance
 _cookie_manager: YouTubeCookieManager | None = None
+
+# Persistent event loop for sync_all operations
+_sync_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_event_loop() -> asyncio.AbstractEventLoop:
+    """Get or create a persistent event loop for sync operations."""
+    global _sync_loop
+    if _sync_loop is None or _sync_loop.is_closed():
+        _sync_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_sync_loop)
+    return _sync_loop
+
+
+def _run_async(coro):
+    """Run an async coroutine using the persistent event loop.
+    
+    This avoids "Event loop is closed" errors when calling asyncio.run()
+    multiple times in the same process.
+    """
+    loop = _get_event_loop()
+    return loop.run_until_complete(coro)
 
 
 def _get_cookie_manager() -> YouTubeCookieManager:
@@ -104,7 +127,7 @@ def sync_channel(
                 count = await db.video_metadata.count_documents({"channel_id": channel_id})
                 return count
 
-        existing_count = asyncio.run(_get_existing_count())
+        existing_count = _run_async(_get_existing_count())
 
         async def _save_channel_only():
             from src.database import MongoDBManager
@@ -127,7 +150,7 @@ def sync_channel(
                 )
                 return await db.save_channel(channel_doc)
 
-        channel_db_id = asyncio.run(_save_channel_only())
+        channel_db_id = _run_async(_save_channel_only())
         console.print(f"[green]✓ Channel updated (ID: {channel_db_id[:16]}...)[/green]")
         console.print(f"[green]✓ Channel already in sync ({existing_count} videos)[/green]")
 
@@ -204,7 +227,7 @@ def sync_channel(
 
     # Note: asyncio.run() is safe here because sync_channel() is designed to be
     # called from synchronous contexts (CLI commands).
-    channel_doc, videos_new, videos_existing = asyncio.run(_save_all())
+    channel_doc, videos_new, videos_existing = _run_async(_save_all())
 
     return SyncResult(
         channel_id=channel_id,
@@ -238,7 +261,7 @@ def get_pending_videos(
         async with MongoDBManager() as db:
             return await db.get_pending_transcription_videos(channel_id)
 
-    pending = asyncio.run(_fetch())
+    pending = _run_async(_fetch())
 
     return [
         VideoMetadataDocument(
@@ -283,7 +306,7 @@ def get_failed_videos(
         async with MongoDBManager() as db:
             return await db.get_failed_transcription_videos(channel_id)
 
-    failed = asyncio.run(_fetch())
+    failed = _run_async(_fetch())
 
     return [
         VideoMetadataDocument(
@@ -341,7 +364,7 @@ def reset_failed_transcription(
             )
             return result.modified_count > 0
 
-    return asyncio.run(_reset())
+    return _run_async(_reset())
 
 
 def mark_video_transcribed(
@@ -368,7 +391,7 @@ def mark_video_transcribed(
         async with MongoDBManager() as db:
             return await db.mark_transcript_completed(video_id, transcript_id)
 
-    return asyncio.run(_mark())
+    return _run_async(_mark())
 
 
 def _fetch_new_videos_only(
@@ -444,7 +467,7 @@ def _fetch_new_videos_only(
                 existing = await db.list_videos_by_channel(channel_id, limit=max_videos or 10000)
                 return {v["video_id"] for v in existing}
 
-        existing_ids = asyncio.run(_get_existing_ids())
+        existing_ids = _run_async(_get_existing_ids())
         console.print(f"[dim]   {len(existing_ids)} videos already in database[/dim]")
 
         # Step 3: Find new videos

@@ -773,6 +773,120 @@ def channel_sync(
         raise typer.Exit(1) from e
 
 
+@channel_app.command("sync-all", help="Sync all tracked channels")
+def channel_sync_all(
+    all_videos: bool = typer.Option(
+        False, "--all", help="Fetch ALL videos (yt-dlp, may take time)"
+    ),
+    incremental: bool = typer.Option(
+        False, "--incremental", "-i", help="Only fetch metadata for NEW videos (smart sync)"
+    ),
+    max_videos: int | None = typer.Option(
+        None, "--max-videos", help="Maximum videos to fetch per channel"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show what would be synced without actually syncing"
+    ),
+):
+    """Sync videos from all tracked channels."""
+    import asyncio
+    from datetime import datetime
+    from src.channel import sync_channel
+    from src.database import MongoDBManager
+
+    try:
+        mode = "all" if all_videos else "recent"
+
+        if incremental and not all_videos:
+            rprint("[yellow]Note: --incremental requires --all, enabling it[/yellow]\n")
+            mode = "all"
+
+        log.info(f"🔄 Starting sync-all (mode={mode})")
+        rprint(f"\n[bold blue]Syncing all channels (mode: {mode})[/bold blue]\n")
+
+        # Fetch all tracked channels
+        async def _get_channels():
+            async with MongoDBManager() as db:
+                channels = await db.list_channels(limit=10000)
+                return channels
+
+        channels = asyncio.run(_get_channels())
+
+        if not channels:
+            rprint("[yellow]⚠ No tracked channels found. Add channels first using:[/yellow]")
+            rprint("[dim]   uv run python -m src.cli channel add @ChannelHandle[/dim]\n")
+            raise typer.Exit(0)
+
+        rprint(f"[dim]Found {len(channels)} tracked channels[/dim]\n")
+
+        # Track results
+        successes = 0
+        failures = 0
+        total_videos_fetched = 0
+        total_videos_new = 0
+        failed_channels = []
+
+        start_time = datetime.now()
+
+        # Sync each channel
+        for i, channel in enumerate(channels, 1):
+            channel_handle = channel.get("channel_handle", channel.get("channel_id"))
+            channel_id = channel.get("channel_id")
+
+            rprint(f"[{i}/{len(channels)}] Syncing @{channel_handle}...")
+
+            if dry_run:
+                rprint(f"   [dim]Would sync (mode: {mode})[/dim]")
+                successes += 1
+                continue
+
+            try:
+                result = sync_channel(
+                    handle=f"@{channel_handle}",
+                    mode=mode,
+                    max_videos=max_videos,
+                    incremental=incremental,
+                )
+                total_videos_fetched += result.videos_fetched
+                total_videos_new += result.videos_new
+                successes += 1
+                rprint(f"   ✓ Synced ({result.videos_fetched} videos, {result.videos_new} new)\n")
+
+            except Exception as e:
+                failures += 1
+                failed_channels.append((channel_handle, str(e)))
+                rprint(f"   [red]✗ Failed: {escape(str(e)[:50])}[/red]\n")
+
+        # Summary
+        elapsed = (datetime.now() - start_time).total_seconds()
+
+        rprint("\n[bold blue]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/bold blue]")
+        rprint("[bold green]✓ Sync-all complete![/bold green]")
+        rprint(f"   Total channels: {len(channels)}")
+        rprint(f"   Successful: {successes}")
+        rprint(f"   Failed: {failures}")
+        rprint(f"   Videos fetched: {total_videos_fetched}")
+        rprint(f"   New videos: {total_videos_new}")
+        rprint(f"   Time elapsed: {elapsed:.1f}s")
+
+        if failed_channels:
+            rprint("\n[bold red]Failed channels:[/bold red]")
+            for ch, err in failed_channels:
+                rprint(f"   • @{ch}: {err[:50]}")
+
+        rprint()
+
+        if failures > 0:
+            raise typer.Exit(1)
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        log.error(f"❌ Sync-all failed: {str(e)[:100]}")
+        rprint(f"[red]✗ Error: {escape(str(e))}[/red]")
+        raise typer.Exit(1) from e
+
+
 @channel_app.command("videos")
 def channel_videos(
     handle: str = typer.Argument(..., help="Channel handle (e.g., @ChartChampions)"),
