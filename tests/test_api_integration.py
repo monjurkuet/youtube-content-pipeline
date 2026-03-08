@@ -229,7 +229,7 @@ class TestTranscriptEndpoints:
         When: GET request to /api/v1/transcripts/{video_id}
         Then: Returns 404 Not Found
         """
-        response = client.get("/api/v1/transcripts/nonexistent123")
+        response = client.get("/api/v1/transcripts/nonexistent")
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
         data = response.json()

@@ -90,6 +90,7 @@ class ErrorHandlerMiddleware:
         error_response = InternalServerErrorResponse(
             request_id=request_id,
             details={"error_type": type(exc).__name__} if __debug__ else None,
+            detail="An unexpected error occurred. Please try again later.",
         )
 
         return JSONResponse(
@@ -138,6 +139,7 @@ class ErrorHandlerMiddleware:
             error_code=ErrorCodes.VALIDATION_ERROR,
             message="Request validation failed",
             details={"errors": errors},
+            detail=errors,
             request_id=request_id,
         )
 
@@ -183,6 +185,7 @@ class ErrorHandlerMiddleware:
             error_response = NotFoundErrorResponse(
                 error_code=error_code,
                 message=detail,
+                detail=detail,
                 request_id=request_id,
             )
         elif status_code == status.HTTP_400_BAD_REQUEST:
@@ -192,6 +195,7 @@ class ErrorHandlerMiddleware:
                 error=error_type,
                 error_code=error_code,
                 message=detail,
+                detail=detail,
                 request_id=request_id,
             )
         elif status_code == status.HTTP_401_UNAUTHORIZED:
@@ -201,6 +205,7 @@ class ErrorHandlerMiddleware:
                 error=error_type,
                 error_code=error_code,
                 message=detail,
+                detail=detail,
                 request_id=request_id,
             )
         elif status_code == status.HTTP_403_FORBIDDEN:
@@ -210,6 +215,7 @@ class ErrorHandlerMiddleware:
                 error=error_type,
                 error_code=error_code,
                 message=detail,
+                detail=detail,
                 request_id=request_id,
             )
         elif status_code == status.HTTP_429_TOO_MANY_REQUESTS:
@@ -219,6 +225,7 @@ class ErrorHandlerMiddleware:
                 error=error_type,
                 error_code=error_code,
                 message=detail,
+                detail=detail,
                 request_id=request_id,
             )
         else:
@@ -227,6 +234,7 @@ class ErrorHandlerMiddleware:
                 error=error_type,
                 error_code=f"HTTP_{status_code}",
                 message=detail,
+                detail=detail,
                 request_id=request_id,
             )
 

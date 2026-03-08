@@ -321,47 +321,42 @@ def fetch_all_with_ytdlp(
     channel_url: str, progress_callback=None, max_videos: int | None = None
 ) -> list[VideoMetadata]:
     """
-    Fetch ALL videos from channel using yt-dlp WITH full metadata.
+    Fetch ALL videos from channel using yt-dlp.
 
-    Uses --simulate to get complete metadata (upload_date, duration, etc.)
-    without downloading video files. This is slower than --flat-playlist
-    but ensures EVERY video has complete metadata.
+    Uses --flat-playlist for fast fetching of all video metadata in a single call.
+    This is much faster than --simulate which makes separate requests per video.
 
     Args:
         channel_url: YouTube channel URL (e.g., https://www.youtube.com/@Handle/videos)
-        progress_callback: Optional callback for progress updates
+        progress_callback: Optional callback for progress updates (not used in fast mode)
         max_videos: Maximum videos to fetch (None = fetch ALL videos)
 
     Returns:
         List of VideoMetadata objects
     """
     limit_msg = f"Limit: {max_videos} videos" if max_videos else "Fetching ALL videos"
-    console.print(f"[dim]Fetching videos with full metadata: {channel_url}[/dim]")
+    console.print(f"[dim]Fetching videos: {channel_url}[/dim]")
     console.print(f"[dim]   {limit_msg}[/dim]")
-    console.print("[dim]   This may take a while...[/dim]")
 
     videos = []
     seen_ids = set()
-    skipped_age_restricted = 0
-    skipped_private = 0
-    skipped_other = 0
 
     try:
-        # Get cookie args
-        cookie_args = _ensure_cookies()
+        # Note: We don't use cookies for channel fetch since:
+        # 1. yt-dlp with cookies causes "format not available" errors
+        # 2. Channel video metadata is public and doesn't require authentication
+        # 3. Cookies are only needed for age-restricted content download
 
-        # Use yt-dlp with --simulate to get full metadata without downloading
-        # This extracts upload_date, duration, view_count, etc. for EVERY video
+        # Use --flat-playlist which is MUCH faster than --simulate
+        # It provides all needed metadata in a single pass: id, title, description,
+        # duration, channel_id, thumbnails, timestamp, view_count, availability
         cmd = [
             "yt-dlp",
-            "--simulate",  # Metadata only, no download
+            "--flat-playlist",
             "--dump-json",
             "--no-warnings",
             "--quiet",
         ]
-
-        # Add cookie args
-        cmd.extend(cookie_args)
 
         # Only add playlist-end if specified
         if max_videos is not None:
@@ -369,27 +364,27 @@ def fetch_all_with_ytdlp(
 
         cmd.append(channel_url)
 
-        process = subprocess.Popen(
+        console.print("[dim]   Fetching video list...[/dim]")
+
+        result = subprocess.run(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
-            bufsize=1,
+            timeout=300,  # 5 minutes for large channels
         )
 
-        line_count = 0
-        if process.stdout is None:
-            console.print("[red]Error: yt-dlp produced no output[/red]")
-            return []
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            if _is_age_restricted_error(stderr):
+                console.print("[yellow]   Some content may be age-restricted[/yellow]")
+            else:
+                console.print(f"[yellow]yt-dlp warning: {stderr[:200]}[/yellow]")
 
-        for line in process.stdout:
+        # Parse all video data from the output
+        for line in result.stdout.strip().split("\n"):
             line = line.strip()
             if not line:
                 continue
-
-            line_count += 1
-            if progress_callback and line_count % 50 == 0:
-                progress_callback(line_count)
 
             try:
                 data = json.loads(line)
@@ -414,36 +409,27 @@ def fetch_all_with_ytdlp(
                     or ""
                 )
 
-                # Try multiple date sources (yt-dlp provides upload_date)
-                upload_date = data.get("upload_date")  # YYYYMMDD format
+                # timestamp is available in flat-playlist mode (Unix timestamp)
                 timestamp = data.get("timestamp")  # Unix timestamp
-                release_date = data.get("release_date")  # YYYYMMDD format
 
-                # Parse upload date from various sources
+                # Parse upload date
                 published_at = None
-                if upload_date:
-                    with contextlib.suppress(ValueError):
-                        published_at = datetime.strptime(upload_date, "%Y%m%d")
-                elif timestamp:
+                if timestamp:
                     with contextlib.suppress(ValueError, OSError):
                         published_at = datetime.fromtimestamp(timestamp)
-                elif release_date:
-                    with contextlib.suppress(ValueError):
-                        published_at = datetime.strptime(release_date, "%Y%m%d")
 
                 # Ensure datetime is timezone-naive for consistency
                 if published_at and published_at.tzinfo is not None:
                     published_at = published_at.replace(tzinfo=None)
 
-                # Extract thumbnail URL (may be a list or string)
+                # Extract thumbnail URL
                 thumbnail = data.get("thumbnail")
                 if not thumbnail:
                     thumbnails = data.get("thumbnails", [])
                     if thumbnails and isinstance(thumbnails, list):
-                        # Get the highest quality thumbnail
                         thumbnail = thumbnails[-1].get("url") if thumbnails else None
 
-                # Extract description (available in full metadata mode)
+                # Extract description
                 description = data.get("description")
 
                 videos.append(
@@ -459,7 +445,6 @@ def fetch_all_with_ytdlp(
                         channel_title=channel,
                     )
                 )
-
             except json.JSONDecodeError as e:
                 console.print(f"[yellow]Warning: JSON parse error: {e}[/yellow]")
                 continue
@@ -467,34 +452,17 @@ def fetch_all_with_ytdlp(
                 console.print(f"[yellow]Warning: Error processing video: {e}[/yellow]")
                 continue
 
-        # Wait for process to complete
-        process.wait()
-
-        if process.returncode != 0:
-            stderr = process.stderr.read()
-            # Check for specific error types
-            if _is_age_restricted_error(stderr):
-                console.print("[yellow]   Some videos skipped (age-restricted)[/yellow]")
-            elif _is_private_error(stderr):
-                console.print("[yellow]   Some videos skipped (private/unavailable)[/yellow]")
-            else:
-                console.print(f"[yellow]yt-dlp completed with warnings: {stderr[:300]}[/yellow]")
-
         # Sort by published date (newest first)
         videos.sort(key=lambda v: v.published_at or datetime.min, reverse=True)
 
-        # Report date coverage
-        videos_with_dates = sum(1 for v in videos if v.published_at)
-        console.print(
-            f"[green]✓ Fetched {len(videos)} videos ({videos_with_dates} with dates)[/green]"
-        )
+        console.print(f"[green]✓ Fetched {len(videos)} videos[/green]")
         return videos
 
-    except subprocess.SubprocessError as e:
-        console.print(f"[red]Error running yt-dlp: {e}[/red]")
+    except subprocess.TimeoutExpired:
+        console.print("[red]Error: yt-dlp timeout[/red]")
         return []
     except Exception as e:
-        console.print(f"[red]Unexpected error: {e}[/red]")
+        console.print(f"[red]Error fetching videos: {e}[/red]")
         return []
 
 

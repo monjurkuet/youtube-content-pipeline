@@ -40,8 +40,7 @@ class TestRateLimitHeaders:
             clear=False,
         ):
             from src.api.app import create_app
-
-            with create_app().test_client() as test_client:
+            with TestClient(create_app(force_reload=True)) as test_client:
                 response = test_client.get("/health")
 
                 # Rate limit headers may or may not be present depending on configuration
@@ -64,8 +63,7 @@ class TestRateLimitHeaders:
             clear=False,
         ):
             from src.api.app import create_app
-
-            with create_app().test_client() as test_client:
+            with TestClient(create_app(force_reload=True)) as test_client:
                 response = test_client.get("/health")
 
                 # If headers are present, they should be numeric
@@ -86,19 +84,17 @@ class TestRateLimitExceeded:
         When: Additional request is made
         Then: Returns 429 Too Many Requests
         """
-        # This test requires rate limiting to be configured with a low limit
-        # For now, we test the error handler
         with patch.dict(
             os.environ,
             {
                 "RATE_LIMIT_ENABLED": "true",
+                "RATE_LIMIT_STORAGE": "memory",
                 "RATE_LIMIT_DEFAULT": "1/minute",  # Very low limit for testing
             },
             clear=False,
         ):
             from src.api.app import create_app
-
-            with create_app().test_client() as test_client:
+            with TestClient(create_app(force_reload=True)) as test_client:
                 # First request should succeed
                 response1 = test_client.get("/health")
                 assert response1.status_code == status.HTTP_200_OK
@@ -121,13 +117,13 @@ class TestRateLimitExceeded:
             os.environ,
             {
                 "RATE_LIMIT_ENABLED": "true",
+                "RATE_LIMIT_STORAGE": "memory",
                 "RATE_LIMIT_DEFAULT": "1/minute",
             },
             clear=False,
         ):
             from src.api.app import create_app
-
-            with create_app().test_client() as test_client:
+            with TestClient(create_app(force_reload=True)) as test_client:
                 # Exhaust limit
                 test_client.get("/health")
 
@@ -154,13 +150,13 @@ class TestRateLimitExceeded:
             os.environ,
             {
                 "RATE_LIMIT_ENABLED": "true",
+                "RATE_LIMIT_STORAGE": "memory",
                 "RATE_LIMIT_DEFAULT": "1/minute",
             },
             clear=False,
         ):
             from src.api.app import create_app
-
-            with create_app().test_client() as test_client:
+            with TestClient(create_app(force_reload=True)) as test_client:
                 # Exhaust limit
                 test_client.get("/health")
 
@@ -285,8 +281,7 @@ class TestRateLimitPerEndpoint:
             clear=False,
         ):
             from src.api.app import create_app
-
-            with create_app().test_client() as test_client:
+            with TestClient(create_app(force_reload=True)) as test_client:
                 request = {"source": "https://www.youtube.com/watch?v=test"}
 
                 # Make several requests
@@ -323,13 +318,15 @@ class TestRateLimitWithAPIKey:
             os.environ,
             {
                 "RATE_LIMIT_ENABLED": "true",
+                "RATE_LIMIT_STORAGE": "memory",
                 "RATE_LIMIT_DEFAULT": "5/minute",
+                "AUTH_REQUIRE_KEY": "false",
+                "API_KEYS": "test-api-key-123",
             },
             clear=False,
         ):
             from src.api.app import create_app
-
-            with create_app().test_client() as test_client:
+            with TestClient(create_app(force_reload=True)) as test_client:
                 # Make requests with API key
                 for _ in range(7):
                     response = test_client.get("/health", headers=headers)
@@ -357,13 +354,15 @@ class TestRateLimitWithAPIKey:
             os.environ,
             {
                 "RATE_LIMIT_ENABLED": "true",
+                "RATE_LIMIT_STORAGE": "memory",
                 "RATE_LIMIT_DEFAULT": "2/minute",
+                "AUTH_REQUIRE_KEY": "false",
+                "API_KEYS": "test_key_1,test_key_2",
             },
             clear=False,
         ):
             from src.api.app import create_app
-
-            with create_app().test_client() as test_client:
+            with TestClient(create_app(force_reload=True)) as test_client:
                 # Exhaust limit for key1
                 for _ in range(3):
                     test_client.get("/health", headers=key1_headers)
@@ -397,8 +396,7 @@ class TestRateLimitConfiguration:
             clear=False,
         ):
             from src.api.app import create_app
-
-            with create_app().test_client() as test_client:
+            with TestClient(create_app(force_reload=True)) as test_client:
                 # Make many requests
                 for _ in range(100):
                     response = test_client.get("/health")
@@ -421,8 +419,7 @@ class TestRateLimitConfiguration:
             clear=False,
         ):
             from src.api.app import create_app
-
-            with create_app().test_client() as test_client:
+            with TestClient(create_app(force_reload=True)) as test_client:
                 response = test_client.get("/health")
                 assert response.status_code == status.HTTP_200_OK
 
@@ -442,8 +439,7 @@ class TestRateLimitConfiguration:
             clear=False,
         ):
             from src.api.app import create_app
-
-            with create_app().test_client() as test_client:
+            with TestClient(create_app(force_reload=True)) as test_client:
                 response = test_client.get("/health")
                 assert response.status_code == status.HTTP_200_OK
 
@@ -467,13 +463,13 @@ class TestRateLimitEdgeCases:
             os.environ,
             {
                 "RATE_LIMIT_ENABLED": "true",
+                "RATE_LIMIT_STORAGE": "memory",
                 "RATE_LIMIT_DEFAULT": "1/minute",
             },
             clear=False,
         ):
             from src.api.app import create_app
-
-            with create_app().test_client() as test_client:
+            with TestClient(create_app(force_reload=True)) as test_client:
                 # Exhaust limit
                 test_client.get("/health")
 
@@ -497,13 +493,13 @@ class TestRateLimitEdgeCases:
             os.environ,
             {
                 "RATE_LIMIT_ENABLED": "true",
+                "RATE_LIMIT_STORAGE": "memory",
                 "RATE_LIMIT_DEFAULT": "5/minute",
             },
             clear=False,
         ):
             from src.api.app import create_app
-
-            with create_app().test_client() as test_client:
+            with TestClient(create_app(force_reload=True)) as test_client:
                 success_count = 0
                 limited_count = 0
 

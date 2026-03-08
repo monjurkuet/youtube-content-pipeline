@@ -106,21 +106,32 @@ def rate_limit_exceeded_handler(
     )
 
 
-def get_limiter() -> Limiter:
+# Global limiter instance
+_limiter: Limiter | None = None
+
+
+def get_limiter(force_reload: bool = False) -> Limiter:
     """Create or get the rate limiter instance.
+
+    Args:
+        force_reload: Whether to force creating a new limiter instance
 
     Returns:
         Configured Limiter instance
     """
-    settings = get_settings()
+    global _limiter
+    if _limiter is not None and not force_reload:
+        return _limiter
+
+    settings = get_settings(force_reload=force_reload)
 
     if not settings.rate_limit_enabled:
-        # Return disabled limiter
-        return Limiter(
+        _limiter = Limiter(
             key_func=get_remote_address,
             default_limits=[],
             enabled=False,
         )
+        return _limiter
 
     # Determine storage backend
     storage_uri = None
@@ -129,34 +140,46 @@ def get_limiter() -> Limiter:
         if redis_manager.is_available:
             storage_uri = settings.redis_url
 
+    # Determine default limit string
+    if settings.rate_limit_default:
+        default_limit_str = settings.rate_limit_default
+    else:
+        free_tier_count = settings.rate_limit_tiers.get("free", 10)
+        default_limit_str = f"{free_tier_count}/minute"
+
     # Create limiter
-    limiter = Limiter(
+    _limiter = Limiter(
         key_func=get_rate_limit_key,
-        default_limits=[f"{settings.rate_limit_tiers.get('free', 10)}/minute"],
+        default_limits=[default_limit_str],
         storage_uri=storage_uri,
         enabled=settings.rate_limit_enabled,
     )
 
-    return limiter
+    return _limiter
 
 
-def setup_rate_limiter(app: FastAPI) -> Limiter:
+def setup_rate_limiter(app: FastAPI, force_reload: bool = False) -> Limiter:
     """Set up rate limiting middleware.
 
     Args:
         app: FastAPI application
+        force_reload: Whether to force creating a new limiter instance
 
     Returns:
         Configured Limiter instance
     """
-    settings = get_settings()
+    settings = get_settings(force_reload=force_reload)
 
     if not settings.rate_limit_enabled:
         logger.info("Rate limiting is disabled")
-        limiter = get_limiter()
+        limiter = get_limiter(force_reload=force_reload)
         return limiter
 
-    limiter = get_limiter()
+    limiter = get_limiter(force_reload=force_reload)
+
+    # Add SlowAPIMiddleware
+    from slowapi.middleware import SlowAPIMiddleware
+    app.add_middleware(SlowAPIMiddleware)
 
     # Add exception handler
     app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
@@ -178,58 +201,16 @@ def setup_rate_limiter(app: FastAPI) -> Limiter:
 
 # Rate limit decorators for endpoints
 def rate_limit(limit: str):
-    """Decorator to apply rate limit to an endpoint.
-
-    Note: This decorator stores the limit on the function.
-    The actual enforcement is done by SlowAPI's middleware.
-
-    Args:
-        limit: Rate limit string (e.g., "10/minute", "100/hour")
-
-    Returns:
-        Decorator function
-
-    Example:
-        @router.get("/expensive")
-        @rate_limit("5/minute")
-        async def expensive_endpoint():
-            ...
-    """
-
-    def decorator(func):
-        # Store the limit on the function for documentation
-        func._rate_limit = limit
-        return func
-
-    return decorator
+    """Decorator to apply rate limit to an endpoint."""
+    return get_limiter().limit(limit)
 
 
 def tiered_rate_limit(tier_limits: dict[str, str] | None = None):
-    """Decorator for tiered rate limiting based on API key tier.
-
-    Args:
-        tier_limits: Dict mapping tier names to limits
-                    (default: free=10/min, pro=100/min, enterprise=1000/min)
-
-    Returns:
-        Decorator function
-
-    Example:
-        @router.get("/api")
-        @tiered_rate_limit()
-        async def api_endpoint():
-            ...
-    """
+    """Decorator for tiered rate limiting."""
     if tier_limits is None:
         tier_limits = {
             "free": "10/minute",
             "pro": "100/minute",
             "enterprise": "1000/minute",
         }
-
-    def decorator(func):
-        # Apply the most restrictive limit by default
-        func._rate_limit = tier_limits["free"]
-        return func
-
-    return decorator
+    return get_limiter().limit(tier_limits["free"])

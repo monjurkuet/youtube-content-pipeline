@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     rate_limit_enabled: bool = True
     rate_limit_storage: str = "redis"  # "redis" or "memory"
     rate_limit_default_tier: str = "free"
+    rate_limit_default: str = ""  # Override default limit string, e.g. "10/minute"
 
     # Prometheus
     prometheus_enabled: bool = True
@@ -127,8 +128,22 @@ class Settings(BaseSettings):
         return []
 
 
+def get_settings(force_reload: bool = False) -> Settings:
+    """Get settings instance.
+
+    Args:
+        force_reload: Whether to force creating a new settings instance
+
+    Returns:
+        Settings instance
+    """
+    if force_reload:
+        _get_settings.cache_clear()  # type: ignore[attr-defined]
+    return _get_settings()
+
+
 @lru_cache
-def get_settings() -> Settings:
+def _get_settings() -> Settings:
     """Get cached settings instance."""
     return Settings()
 

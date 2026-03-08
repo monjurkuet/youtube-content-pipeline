@@ -1,6 +1,6 @@
 """Pydantic models for API requests and responses."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -31,6 +31,17 @@ class TranscriptionRequest(BaseModel):
         description="Whether to save transcript to database",
     )
 
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "source": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "webhook_url": "https://callback.example.com/webhook",
+                "priority": "normal",
+                "save_to_db": True,
+            }
+        }
+    }
+
 
 class AddChannelsFromVideosRequest(BaseModel):
     """Request model for adding channels from video URLs."""
@@ -55,6 +66,19 @@ class AddChannelsFromVideosRequest(BaseModel):
         description="Sync mode: 'recent' for ~15 videos, 'all' for all videos",
     )
 
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "video_urls": [
+                    "https://youtu.be/S9s1rZKO_18",
+                    "https://youtu.be/fpKtJLc5Ntg",
+                ],
+                "auto_sync": True,
+                "sync_mode": "recent",
+            }
+        }
+    }
+
 
 # =============================================================================
 # Response Models
@@ -72,7 +96,7 @@ class TranscriptionJobResponse(BaseModel):
     video_id: str = Field(..., description="Video identifier")
     message: str = Field(..., description="Human-readable status message")
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="When the job was created",
     )
     estimated_completion: datetime | None = Field(

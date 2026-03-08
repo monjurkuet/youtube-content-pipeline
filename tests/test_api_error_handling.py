@@ -42,7 +42,7 @@ class Test404NotFound:
         When: GET transcript endpoint
         Then: Returns 404 with proper message
         """
-        response = client.get("/api/v1/transcripts/nonexistent123")
+        response = client.get("/api/v1/transcripts/ABCDEFGHIJK")
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
         data = response.json()
@@ -190,7 +190,7 @@ class TestErrorResponseFormat:
         When: Parse response
         Then: Has 'error' field
         """
-        response = client.get("/api/v1/transcripts/nonexistent123")
+        response = client.get("/api/v1/transcripts/ABCDEFGHIJK")
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
         data = response.json()
@@ -205,7 +205,7 @@ class TestErrorResponseFormat:
         When: Parse response
         Then: Has message field
         """
-        response = client.get("/api/v1/transcripts/nonexistent123")
+        response = client.get("/api/v1/transcripts/ABCDEFGHIJK")
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
         data = response.json()
@@ -253,7 +253,7 @@ class TestRequestID:
         Then: Has request_id field
         """
         # The error handler middleware adds request_id
-        response = client.get("/api/v1/transcripts/nonexistent123")
+        response = client.get("/api/v1/transcripts/ABCDEFGHIJK")
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
         # Request ID is added by middleware
@@ -265,7 +265,7 @@ class TestRequestID:
         When: Check request ID format
         Then: Valid UUID or similar format
         """
-        response = client.get("/api/v1/transcripts/nonexistent123")
+        response = client.get("/api/v1/transcripts/ABCDEFGHIJK")
 
         # Request ID should be a string identifier
         # Format depends on middleware implementation
@@ -277,8 +277,8 @@ class TestRequestID:
         When: Compare request IDs
         Then: Different IDs (each request is unique)
         """
-        response1 = client.get("/api/v1/transcripts/nonexistent123")
-        response2 = client.get("/api/v1/transcripts/nonexistent123")
+        response1 = client.get("/api/v1/transcripts/ABCDEFGHIJK")
+        response2 = client.get("/api/v1/transcripts/ABCDEFGHIJK")
 
         # Each request should have its own ID
         assert response1.status_code == response2.status_code
@@ -294,7 +294,7 @@ class TestSpecificErrorCodes:
         When: GET transcript
         Then: Error code indicates NOT_FOUND
         """
-        response = client.get("/api/v1/transcripts/nonexistent123")
+        response = client.get("/api/v1/transcripts/ABCDEFGHIJK")
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
@@ -341,7 +341,7 @@ class TestErrorHandlingWithMocks:
         mock_db_manager.transcripts.find_one.side_effect = Exception("DB Error")
 
         with patch("src.api.routers.transcripts.get_db", return_value=mock_db_manager.db):
-            response = client.get("/api/v1/transcripts/test123")
+            response = client.get("/api/v1/transcripts/ABCDEFGHIJK")
 
             # Should handle gracefully
             assert response.status_code in [

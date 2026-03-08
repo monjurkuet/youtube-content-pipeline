@@ -8,7 +8,7 @@ These tests verify:
 """
 
 import pytest
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Request
 from fastapi.testclient import TestClient
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
@@ -30,15 +30,24 @@ def test_app():
     # Set up rate limiter
     limiter = Limiter(key_func=get_remote_address)
     app.state.limiter = limiter
+
+    from slowapi.middleware import SlowAPIMiddleware
+    app.add_middleware(SlowAPIMiddleware)
+
     app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
     @app.get("/limited")
     @rate_limit("2/minute")
-    async def limited_endpoint():
+    async def limited_endpoint(request: Request):
         return {"status": "ok"}
 
     @app.get("/unlimited")
-    async def unlimited_endpoint():
+    async def unlimited_endpoint(request: Request):
+        return {"status": "ok"}
+
+    @app.get("/headers")
+    @rate_limit("10/minute")
+    async def headers_endpoint(request: Request):
         return {"status": "ok"}
 
     return app
@@ -68,7 +77,7 @@ def test_rate_limit_enforcement(client):
 
 def test_rate_limit_headers(client):
     """Test that rate limit headers are present."""
-    response = client.get("/limited")
+    response = client.get("/headers")
 
     # Should have rate limit headers
     assert "X-RateLimit-Limit" in response.headers or response.status_code == 200
@@ -106,7 +115,7 @@ def test_get_limiter():
 
 def test_rate_limit_decorator():
     """Test rate limit decorator."""
-    from slowapi import limit
+    from slowapi.extension import Limiter
 
     decorator = rate_limit("5/minute")
     assert decorator is not None
@@ -146,9 +155,14 @@ class TestRateLimitExceededHandler:
     def test_handler_returns_429(self):
         """Test handler returns 429 status."""
         from fastapi import Request
-        from slowapi import RateLimitExceeded
+        from slowapi.errors import RateLimitExceeded
 
-        exc = RateLimitExceeded(None, None, None, "60")
+        from unittest.mock import MagicMock
+        from slowapi.wrappers import Limit
+        limit = MagicMock(spec=Limit)
+        limit.error_message = "Rate limit exceeded. Retry after 60"
+        limit.limit = "2/minute"
+        exc = RateLimitExceeded(limit)
 
         # Create mock request
         app = FastAPI()
@@ -165,9 +179,14 @@ class TestRateLimitExceededHandler:
     def test_handler_includes_retry_after(self):
         """Test handler includes Retry-After header."""
         from fastapi import Request
-        from slowapi import RateLimitExceeded
+        from slowapi.errors import RateLimitExceeded
 
-        exc = RateLimitExceeded(None, None, None, "120")
+        from unittest.mock import MagicMock
+        from slowapi.wrappers import Limit
+        limit = MagicMock(spec=Limit)
+        limit.error_message = "Rate limit exceeded. Retry after 120"
+        limit.limit = "2/minute"
+        exc = RateLimitExceeded(limit)
 
         # The handler should include retry_after in response
         assert exc is not None

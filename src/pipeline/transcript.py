@@ -1,6 +1,6 @@
 """Simple 2-step transcription pipeline: get transcript -> save to DB."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from rich.console import Console
@@ -50,7 +50,7 @@ class TranscriptPipeline:
         source_type, source_id = identify_source_type(source)
 
         # Initialize result
-        started_at = datetime.utcnow()
+        started_at = datetime.now(timezone.utc)
         transcript_doc: TranscriptDocument | None = None
 
         console.print(
@@ -102,7 +102,7 @@ class TranscriptPipeline:
                     console.print("   [dim]Step 2/2: Skipping database save[/dim]")
 
             # Build result
-            completed_at = datetime.utcnow()
+            completed_at = datetime.now(timezone.utc)
             duration_seconds = (completed_at - started_at).total_seconds()
 
             result = ProcessingResult(
@@ -118,6 +118,7 @@ class TranscriptPipeline:
                 completed_at=completed_at,
                 duration_seconds_total=duration_seconds,
                 saved_to_db=save_to_db and self.settings.pipeline_save_to_db,
+                transcript_id=doc_id if (save_to_db and self.settings.pipeline_save_to_db) else None,
             )
 
             console.print("\n[bold green]✅ Transcription complete![/bold green]")
@@ -171,6 +172,8 @@ def get_transcript(
     source: str,
     work_dir: Path | None = None,
     save_to_db: bool = True,
+    language: str | None = None,
+    verbose: bool = False,
 ) -> ProcessingResult:
     """
     Convenience function to transcribe a video.
@@ -179,6 +182,8 @@ def get_transcript(
         source: YouTube URL, video URL, or local file path
         work_dir: Optional working directory
         save_to_db: Whether to save to MongoDB
+        language: Preferred language code (currently unused, reserved for future)
+        verbose: Whether to show verbose output
 
     Returns:
         ProcessingResult

@@ -87,5 +87,5 @@ class TestIdentifySourceType:
         """Test invalid source raises error."""
         from src.transcription.handler import identify_source_type
 
-        with pytest.raises(ValueError, match="Unknown source type"):
+        with pytest.raises(ValueError, match="Could not identify source type"):
             identify_source_type("not-a-valid-source")

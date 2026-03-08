@@ -5,7 +5,7 @@ This module handles all MongoDB connection management and operations.
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
@@ -105,7 +105,7 @@ class MongoDBManager:
         """
         await self.initialize()
         doc = transcript_doc.model_dump_for_mongo()
-        doc["updated_at"] = datetime.utcnow().isoformat()
+        doc["updated_at"] = datetime.now(timezone.utc).isoformat()
 
         result_op = await self.transcripts.replace_one(
             {"video_id": transcript_doc.video_id}, doc, upsert=True
@@ -217,7 +217,7 @@ class MongoDBManager:
         """
         await self.initialize()
         doc = channel_doc.model_dump_for_mongo()
-        doc["updated_at"] = datetime.utcnow().isoformat()
+        doc["updated_at"] = datetime.now(timezone.utc).isoformat()
 
         result_op = await self.channels.replace_one(
             {"channel_id": channel_doc.channel_id}, doc, upsert=True
@@ -496,18 +496,22 @@ class MongoDBManager:
 _db_manager: MongoDBManager | None = None
 
 
-def get_db_manager() -> MongoDBManager:
+def get_db_manager(force_reload: bool = False) -> MongoDBManager:
     """Get or create the global database manager instance.
 
     Deprecated: Use `async with MongoDBManager()` instead for proper lifecycle management.
     This function is kept for backward compatibility.
 
+    Args:
+        force_reload: Whether to force creating a new manager instance
+
     Returns:
         MongoDBManager instance
     """
     global _db_manager
-    if _db_manager is None:
-        _db_manager = MongoDBManager()
+    if _db_manager is not None and not force_reload:
+        return _db_manager
+    _db_manager = MongoDBManager()
     return _db_manager
 
 

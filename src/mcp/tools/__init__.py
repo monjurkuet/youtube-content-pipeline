@@ -8,6 +8,10 @@ This module exports all MCP tool handlers for:
 
 from src.mcp.tools.channels import (
     add_channel,
+    add_channels_from_videos,
+    list_channel_videos,
+    list_channels,
+    remove_channel,
     sync_channel,
     transcribe_channel_pending,
 )
@@ -23,6 +27,10 @@ __all__ = [
     "get_job_status",
     # Channel tools
     "add_channel",
+    "list_channels",
     "sync_channel",
+    "remove_channel",
+    "list_channel_videos",
+    "add_channels_from_videos",
     "transcribe_channel_pending",
 ]

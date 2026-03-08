@@ -22,7 +22,8 @@ from fastapi.testclient import TestClient
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
 from src.api.app import create_app
-from src.api.security import generate_api_key, hash_api_key
+from src.api.security import generate_api_key, hash_api_key, get_api_key_validator
+from src.core.config import get_settings
 from src.database.manager import MongoDBManager
 from src.database.redis import RedisManager
 
@@ -73,6 +74,8 @@ def app() -> FastAPI:
         },
         clear=False,
     ):
+        get_settings(force_reload=True)
+        get_api_key_validator(force_reload=True)
         test_app = create_app()
         yield test_app
 
@@ -110,6 +113,8 @@ def client_with_auth(app: FastAPI) -> Generator[TestClient, None, None]:
         clear=False,
     ):
         # Recreate app with auth enabled
+        get_settings(force_reload=True)
+        get_api_key_validator(force_reload=True)
         auth_app = create_app()
         with TestClient(auth_app, base_url="http://test") as test_client:
             yield test_client
@@ -213,12 +218,12 @@ async def redis_available(test_redis: RedisManager) -> bool:
 
 @pytest.fixture
 def valid_api_key() -> str:
-    """Generate a valid API key for testing.
+    """Get a valid API key for testing.
 
     Returns:
         Valid API key string
     """
-    return generate_api_key()
+    return "test-api-key-123"
 
 
 @pytest.fixture
@@ -364,7 +369,7 @@ def mock_transcription_pipeline() -> MagicMock:
     mock_result.segment_count = 10
     mock_result.duration_seconds = 120.5
 
-    with patch("src.api.routers.videos.get_transcript", return_value=mock_result) as mock:
+    with patch("src.services.transcription_service.get_transcript", return_value=mock_result) as mock:
         yield mock
 
 

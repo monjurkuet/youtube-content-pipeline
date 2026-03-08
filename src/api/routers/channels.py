@@ -9,19 +9,19 @@ This module provides endpoints for:
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from src.api.dependencies import get_db
+from src.api.dependencies import get_db, get_db_manager_dep
+from src.database.manager import MongoDBManager
 from src.api.models.errors import ErrorCodes
 from src.api.models.requests import (
     AddChannelsFromVideosRequest,
     AddChannelsFromVideosResponse,
 )
 from src.api.security import validate_api_key
-from src.channel.resolver import resolve_channel_handle
 from src.channel.schemas import ChannelDocument
-from src.channel.sync import sync_channel
+from src.services.channel_service import add_channels_from_videos_service
 from src.core.constants import DEFAULT_LIMIT, MAX_LIMIT
 
 router = APIRouter(prefix="/channels", tags=["channels"])
@@ -357,6 +357,7 @@ async def sync_channel_endpoint(
         examples=["recent", "all"],
     ),
     db: AsyncIOMotorDatabase = Depends(get_db),
+    db_manager: MongoDBManager = Depends(get_db_manager_dep),
     auth_ctx=Depends(validate_api_key),
 ) -> dict[str, Any]:
     """Sync videos from a channel.
@@ -397,7 +398,7 @@ async def sync_channel_endpoint(
             )
 
         # Perform sync
-        result = sync_channel(handle=handle, mode=mode, db_manager=None)
+        result = sync_channel(handle=handle, mode=mode, db_manager=db_manager)
 
         return {
             "success": True,
@@ -473,181 +474,122 @@ async def sync_channel_endpoint(
     },
 )
 async def add_channels_from_videos_endpoint(
-    request: AddChannelsFromVideosRequest,
+    request: AddChannelsFromVideosRequest = Body(
+        ...,
+        openapi_examples={
+            "standard": {
+                "summary": "Standard request",
+                "value": {
+                    "video_urls": [
+                        "https://youtu.be/S9s1rZKO_18",
+                        "https://youtu.be/fpKtJLc5Ntg",
+                    ],
+                    "auto_sync": True,
+                    "sync_mode": "recent",
+                },
+            }
+        },
+    ),
     db: AsyncIOMotorDatabase = Depends(get_db),
+    db_manager: MongoDBManager = Depends(get_db_manager_dep),
     auth_ctx=Depends(validate_api_key),
 ) -> AddChannelsFromVideosResponse:
-    """Add channels from YouTube video URLs.
+    """Add channels from YouTube video URLs."""
+    results = await add_channels_from_videos_service(
+        video_urls=request.video_urls,
+        db_manager=db_manager,
+        auto_sync=request.auto_sync,
+        sync_mode=request.sync_mode,
+    )
 
-    Args:
-        request: Request with video URLs and sync options
-        db: Database dependency
-        auth_ctx: Authentication context (optional)
+    return AddChannelsFromVideosResponse(**results)
 
-    Returns:
-        AddChannelsFromVideosResponse with detailed results
-    """
-    import json
-    import subprocess
 
-    processed_channels: set[str] = set()
-    results = {
-        "added": [],
-        "skipped_duplicate": [],
-        "skipped_existing": [],
-        "failed": [],
+@router.get(
+    "/{channel_id}/stats",
+    response_model=dict[str, Any],
+    summary="Get channel statistics",
+    operation_id="get_channel_stats",
+    responses={
+        200: {"description": "Channel statistics retrieved successfully"},
+        404: {"description": "Channel not found"},
+    },
+)
+async def get_channel_stats(
+    channel_id: str = Path(..., description="YouTube channel ID"),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    auth_ctx=Depends(validate_api_key),
+) -> dict[str, Any]:
+    """Get statistics for a specific channel."""
+    # Check if channel exists
+    channel = await db.channels.find_one({"channel_id": channel_id})
+    if channel is None:
+        raise HTTPException(status_code=404, detail=f"Channel {channel_id} not found")
+
+    # Get video counts by transcript status
+    pipeline = [
+        {"$match": {"channel_id": channel_id}},
+        {"$group": {"_id": "$transcript_status", "count": {"$sum": 1}}},
+    ]
+    cursor = db.video_metadata.aggregate(pipeline)
+    status_counts = {doc["_id"] or "pending": doc["count"] async for doc in cursor}
+
+    total_videos = sum(status_counts.values())
+    completed = status_counts.get("completed", 0)
+    failed = status_counts.get("failed", 0)
+    pending = status_counts.get("pending", 0)
+
+    return {
+        "channel_id": channel_id,
+        "channel_title": channel.get("channel_title"),
+        "total_videos": total_videos,
+        "transcribed_videos": completed,
+        "failed_videos": failed,
+        "pending_videos": pending,
+        "completion_rate": (completed / total_videos * 100) if total_videos > 0 else 0,
+        "status_breakdown": status_counts,
     }
 
-    def extract_video_id(url: str) -> str | None:
-        """Extract video ID from YouTube URL."""
-        import re
 
-        match = re.search(r"(?:v=|\.be/)([a-zA-Z0-9_-]{11})", url)
-        return match.group(1) if match else None
+@router.post(
+    "/sync-all",
+    summary="Sync all channels",
+    description="Trigger a sync for all tracked channels.",
+    operation_id="sync_all_channels",
+)
+async def sync_all_channels(
+    mode: str = Query(default="recent", description="Sync mode: 'recent' or 'all'"),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    db_manager: MongoDBManager = Depends(get_db_manager_dep),
+    auth_ctx=Depends(validate_api_key),
+) -> dict[str, Any]:
+    """Sync all tracked channels."""
+    cursor = db.channels.find({})
+    channels = await cursor.to_list(length=1000)
 
-    def get_channel_from_video(video_id: str) -> dict[str, str] | None:
-        """Get channel info from video ID using yt-dlp."""
-        from src.video.cookie_manager import YouTubeCookieManager
+    if not channels:
+        return {"message": "No channels to sync", "synced": 0}
 
+    from src.channel.sync import sync_channel
+
+    results = []
+    for ch in channels:
+        handle = ch.get("channel_handle")
+        if not handle:
+            continue
         try:
-            # Ensure cookies are available
-            cookie_manager = YouTubeCookieManager(auto_extract=True)
-            cookie_manager.ensure_cookies()
-            cookie_args = cookie_manager.get_cookie_args()
-
-            cmd = [
-                "yt-dlp",
-                "--dump-json",
-                "--no-warnings",
-                "--quiet",
-            ]
-            cmd.extend(cookie_args)  # Add cookies if available
-            cmd.append(f"https://www.youtube.com/watch?v={video_id}")
-
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-
-            if result.returncode == 0 and result.stdout.strip():
-                data = json.loads(result.stdout.strip())
-                channel_id = data.get("channel_id")
-                channel_handle = data.get("channel", "") or data.get("uploader", "")
-
-                if channel_id:
-                    return {
-                        "channel_id": channel_id,
-                        "channel_handle": channel_handle,
-                    }
-
-            return None
-        except Exception:
-            return None
-
-    for url in request.video_urls:
-        video_id = extract_video_id(url)
-        if not video_id:
-            results["failed"].append({"url": url, "video_id": None, "error": "Invalid URL format"})
-            continue
-
-        channel_info = get_channel_from_video(video_id)
-        if not channel_info:
-            results["failed"].append(
-                {"url": url, "video_id": video_id, "error": "Could not fetch channel info"}
-            )
-            continue
-
-        channel_id = channel_info["channel_id"]
-        channel_handle = channel_info["channel_handle"]
-
-        # Check if already processed in this batch
-        if channel_id in processed_channels:
-            results["skipped_duplicate"].append(
-                {
-                    "url": url,
-                    "channel_id": channel_id,
-                    "channel_handle": channel_handle,
-                }
-            )
-            continue
-
-        # Check if channel already exists in database
-        existing_channel = await db.channels.find_one({"channel_id": channel_id})
-        if existing_channel:
-            results["skipped_existing"].append(
-                {
-                    "url": url,
-                    "channel_id": channel_id,
-                    "channel_handle": existing_channel.get("channel_handle"),
-                }
-            )
-            processed_channels.add(channel_id)
-            continue
-
-        try:
-            # Resolve channel handle to get proper channel URL
-            resolved_handle = f"@{channel_handle}".replace(" ", "").replace("-", "")
-            channel_id_resolved, channel_url = resolve_channel_handle(resolved_handle)
-
-            # Use resolved channel_id
-            channel_id = channel_id_resolved
-
-            # Check again with resolved ID
-            existing_channel = await db.channels.find_one({"channel_id": channel_id})
-            if existing_channel:
-                results["skipped_existing"].append(
-                    {
-                        "url": url,
-                        "channel_id": channel_id,
-                        "channel_handle": existing_channel.get("channel_handle"),
-                    }
-                )
-                processed_channels.add(channel_id)
-                continue
-
-            # Save channel to database
-            normalized_handle = channel_handle.replace(" ", "").replace("-", "")
-            channel_doc = ChannelDocument(
-                channel_id=channel_id,
-                channel_handle=normalized_handle,
-                channel_title=channel_handle,
-                channel_url=channel_url,
-            )
-
-            doc_id = await db.save_channel(channel_doc)
-
-            result_entry: dict[str, Any] = {
-                "url": url,
-                "channel_id": channel_id,
-                "channel_handle": normalized_handle,
-                "channel_title": channel_doc.channel_title,
-                "database_id": str(doc_id),
-            }
-
-            # Auto-sync if requested
-            if request.auto_sync:
-                try:
-                    sync_result = sync_channel(
-                        handle=f"@{normalized_handle}",
-                        mode=request.sync_mode,
-                        db_manager=None,
-                    )
-                    result_entry["sync_videos_fetched"] = sync_result.videos_fetched
-                    result_entry["sync_videos_new"] = sync_result.videos_new
-                except Exception as sync_error:
-                    result_entry["sync_error"] = str(sync_error)
-
-            results["added"].append(result_entry)
-            processed_channels.add(channel_id)
-
+            res = sync_channel(handle=f"@{handle}", mode=mode, db_manager=db_manager)
+            results.append({
+                "channel_id": res.channel_id,
+                "handle": handle,
+                "new_videos": res.videos_new,
+                "success": True
+            })
         except Exception as e:
-            results["failed"].append({"url": url, "video_id": video_id, "error": str(e)})
+            results.append({"handle": handle, "error": str(e), "success": False})
 
-    return AddChannelsFromVideosResponse(
-        success=True,
-        added=results["added"],
-        skipped_duplicate=results["skipped_duplicate"],
-        skipped_existing=results["skipped_existing"],
-        failed=results["failed"],
-        total_processed=len(request.video_urls),
-        total_added=len(results["added"]),
-        total_skipped=len(results["skipped_duplicate"]) + len(results["skipped_existing"]),
-        total_failed=len(results["failed"]),
-    )
+    return {
+        "message": f"Synced {len(results)} channels",
+        "total_channels": len(channels),
+        "results": results,
+    }

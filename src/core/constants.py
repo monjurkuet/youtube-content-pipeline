@@ -44,7 +44,6 @@ APP_VERSION = "0.5.0"  # Updated for Phase 1 restructuring
 # =============================================================================
 
 API_V1_PREFIX = "/api/v1"
-API_V2_PREFIX = "/api/v2"  # Reserved for future use
 
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 1000
@@ -94,6 +93,10 @@ API_TAGS = [
     {
         "name": "health",
         "description": "Health check and monitoring endpoints.",
+    },
+    {
+        "name": "stats",
+        "description": "API statistics and monitoring endpoints.",
     },
 ]
 

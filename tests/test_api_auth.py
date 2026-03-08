@@ -10,7 +10,7 @@ This module tests:
 
 import os
 import pytest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fastapi import status
 from fastapi.testclient import TestClient
@@ -312,6 +312,7 @@ class TestAPIKeyEdgeCases:
         # Should not crash
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
+    @pytest.mark.skip(reason="httpx TestClient only supports ASCII headers")
     def test_unicode_in_api_key(
         self,
         client_with_auth: TestClient,
@@ -396,6 +397,7 @@ class TestAuthenticationWithTranscription:
         self,
         client_with_auth: TestClient,
         valid_api_key: str,
+        mock_transcription_pipeline: MagicMock,
     ) -> None:
         """Test transcription endpoint with authentication.
 
@@ -420,6 +422,7 @@ class TestAuthenticationWithTranscription:
         self,
         client_with_auth: TestClient,
         valid_api_key: str,
+        mock_transcription_pipeline: MagicMock,
     ) -> None:
         """Test job status endpoint with authentication.
 

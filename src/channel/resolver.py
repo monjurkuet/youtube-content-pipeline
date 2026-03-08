@@ -1,11 +1,12 @@
-"""Channel handle resolver - converts @handle to channel ID."""
-
 import json
 import re
+import subprocess
+from typing import Any
 
 from rich.console import Console
 
 from src.core.http_session import get
+from src.video.cookie_manager import get_cookie_manager
 
 console = Console()
 
@@ -93,15 +94,10 @@ def _try_rss_feed(handle: str) -> str | None:
 
 def _try_ytdlp(handle: str) -> str | None:
     """Use yt-dlp to resolve channel handle to channel ID."""
-    import json
-    import subprocess
-
-    from src.video.cookie_manager import YouTubeCookieManager
-
     channel_url = f"https://www.youtube.com/{handle}/videos"
 
     # Ensure cookies are available
-    cookie_manager = YouTubeCookieManager(auto_extract=True)
+    cookie_manager = get_cookie_manager(auto_extract=True)
     cookie_manager.ensure_cookies()
     cookie_args = cookie_manager.get_cookie_args()
 
@@ -227,4 +223,40 @@ def get_channel_id_from_rss(channel_id: str) -> str | None:
             return channel_id
         return None
     except Exception:
+        return None
+
+
+def get_channel_from_video(video_id: str) -> dict[str, str] | None:
+    """Get channel info from video ID using yt-dlp."""
+    try:
+        # Ensure cookies are available
+        cookie_manager = get_cookie_manager(auto_extract=True)
+        cookie_manager.ensure_cookies()
+        cookie_args = cookie_manager.get_cookie_args()
+
+        cmd = [
+            "yt-dlp",
+            "--dump-json",
+            "--no-warnings",
+            "--quiet",
+        ]
+        cmd.extend(cookie_args)  # Add cookies if available
+        cmd.append(f"https://www.youtube.com/watch?v={video_id}")
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+        if result.returncode == 0 and result.stdout.strip():
+            data = json.loads(result.stdout.strip())
+            channel_id = data.get("channel_id")
+            channel_handle = data.get("channel", "") or data.get("uploader", "")
+
+            if channel_id:
+                return {
+                    "channel_id": channel_id,
+                    "channel_handle": channel_handle,
+                }
+
+        return None
+    except Exception as e:
+        console.print(f"[yellow]get_channel_from_video failed: {e}[/yellow]")
         return None

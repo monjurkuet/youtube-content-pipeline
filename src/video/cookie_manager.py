@@ -460,9 +460,21 @@ class YouTubeCookieManager:
         return status
 
 
-def get_cookie_manager(cache_duration_hours: int = 24) -> YouTubeCookieManager:
-    """Get default cookie manager instance."""
-    return YouTubeCookieManager(cache_duration_hours=cache_duration_hours)
+# Global default cookie manager instance
+_default_cookie_manager: YouTubeCookieManager | None = None
+
+
+def get_cookie_manager(
+    cache_duration_hours: int = 24, auto_extract: bool = True
+) -> YouTubeCookieManager:
+    """Get default cookie manager instance (singleton)."""
+    global _default_cookie_manager
+    if _default_cookie_manager is None:
+        _default_cookie_manager = YouTubeCookieManager(
+            cache_duration_hours=cache_duration_hours,
+            auto_extract=auto_extract,
+        )
+    return _default_cookie_manager
 
 
 if __name__ == "__main__":

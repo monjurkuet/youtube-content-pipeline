@@ -139,9 +139,8 @@ async def list_transcripts(
 async def get_job_status(job_id: str) -> dict[str, Any]:
     """Check the status of a transcription job.
 
-    Note: This is a simplified implementation. In a production system
-    with a job queue, this would query the job queue for status.
-    For now, it returns a completed status since transcription is synchronous.
+    This tool queries the Redis job store for the current status
+    of a transcription job.
 
     Args:
         job_id: Job identifier (UUID format)
@@ -149,21 +148,42 @@ async def get_job_status(job_id: str) -> dict[str, Any]:
     Returns:
         dict with keys:
             - job_id: The job ID
-            - status: Job status ("completed", "processing", "failed", "unknown")
+            - status: Job status ("queued", "processing", "completed", "failed", "unknown")
             - progress: Progress percentage (0-100)
             - result_url: URL to retrieve results if completed (optional)
             - error: Error message if failed (optional)
 
     Example:
-        result = await get_job_status("550e8400-e29b-41d4-a716-446655440000")
+        result = await get_job_status("job_abc123_20240307120000")
         # Returns: {"job_id": "...", "status": "completed", "progress": 100, ...}
     """
-    # For synchronous transcription, all jobs are "completed"
-    # In a production system with async jobs, this would query a job queue
-    return {
-        "job_id": job_id,
-        "status": "completed",
-        "progress": 100,
-        "message": "Transcription is synchronous - jobs complete immediately",
-        "result_url": f"transcript://lookup-by-job/{job_id}",
-    }
+    from src.database.redis import get_redis_manager
+
+    redis_manager = get_redis_manager()
+
+    try:
+        job = await redis_manager.get_job(job_id)
+
+        if job is None:
+            return {
+                "job_id": job_id,
+                "status": "unknown",
+                "message": f"Job {job_id} not found",
+            }
+
+        return {
+            "job_id": job["job_id"],
+            "status": job["status"],
+            "progress": job.get("progress_percent", 0),
+            "current_step": job.get("current_step", ""),
+            "video_id": job.get("video_id", ""),
+            "result_url": job.get("result_url"),
+            "error": job.get("error_message"),
+        }
+
+    except Exception as e:
+        return {
+            "job_id": job_id,
+            "status": "unknown",
+            "error": f"Failed to retrieve job status: {e}",
+        }

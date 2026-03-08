@@ -5,7 +5,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.api.routers import transcripts_router, videos_router
+from src.api.middleware.error_handler import setup_error_handler
+from src.api.routers import (
+    channels_router,
+    health_router,
+    stats_router,
+    transcripts_router,
+    videos_router,
+)
 from src.core.config import get_settings
 from src.database import get_db_manager
 
@@ -30,11 +37,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Transcription Pipeline API",
+    title="YouTube Content Pipeline API",
     description="REST API for video transcription and transcript management",
-    version="0.4.0",
+    version="0.5.0",
     lifespan=lifespan,
 )
+
+# Setup error handler
+setup_error_handler(app)
 
 # Add CORS middleware
 app.add_middleware(
@@ -47,6 +57,9 @@ app.add_middleware(
 # Include routers
 app.include_router(videos_router, prefix="/api/v1")
 app.include_router(transcripts_router, prefix="/api/v1")
+app.include_router(channels_router, prefix="/api/v1")
+app.include_router(stats_router, prefix="/api/v1")
+app.include_router(health_router, prefix="/api/v1")
 
 
 @app.get(

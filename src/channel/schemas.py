@@ -1,6 +1,6 @@
 """Pydantic schemas for channel tracking module."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -35,7 +35,7 @@ class VideoMetadataDocument(BaseModel):
     transcript_id: str | None = None
     transcript_error: str | None = None
     transcript_error_category: str | None = None
-    synced_at: datetime = Field(default_factory=datetime.utcnow)
+    synced_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     def model_dump_for_mongo(self) -> dict[str, Any]:
         """Convert to dict suitable for MongoDB storage."""
@@ -53,7 +53,7 @@ class ChannelDocument(BaseModel):
     channel_handle: str
     channel_title: str
     channel_url: str
-    tracked_since: datetime = Field(default_factory=datetime.utcnow)
+    tracked_since: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_synced: datetime | None = None
     total_videos_tracked: int = 0
     sync_mode: Literal["recent", "all"] = "recent"
@@ -77,4 +77,4 @@ class SyncResult(BaseModel):
     videos_fetched: int
     videos_new: int
     videos_existing: int
-    sync_completed_at: datetime = Field(default_factory=datetime.utcnow)
+    sync_completed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

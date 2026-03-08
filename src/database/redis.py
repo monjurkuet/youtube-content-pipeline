@@ -67,7 +67,7 @@ class RedisManager:
         self.health_check_timeout = health_check_timeout
 
         self._pool: ConnectionPool | None = None
-        self._client: redis.Redis | None = None
+        self._redis: redis.Redis | None = None
         self._available = False
 
     async def connect(self) -> bool:
@@ -76,7 +76,7 @@ class RedisManager:
         Returns:
             True if connection successful, False otherwise
         """
-        if self._client is not None:
+        if self._redis is not None:
             return self._available
 
         try:
@@ -91,10 +91,10 @@ class RedisManager:
             )
 
             # Create Redis client
-            self._client = redis.Redis(connection_pool=self._pool)
+            self._redis = redis.Redis(connection_pool=self._pool)
 
             # Test connection
-            await self._client.ping()
+            await self._redis.ping()
             self._available = True
 
             logger.info(
@@ -109,19 +109,19 @@ class RedisManager:
                 e,
             )
             self._available = False
-            self._client = None
+            self._redis = None
             self._pool = None
             return False
 
     async def disconnect(self) -> None:
         """Close Redis connection and pool."""
-        if self._client:
+        if self._redis:
             try:
-                await self._client.close()
+                await self._redis.aclose()
             except Exception as e:
                 logger.warning("Error closing Redis client: %s", e)
             finally:
-                self._client = None
+                self._redis = None
                 self._available = False
 
         if self._pool:
@@ -165,7 +165,7 @@ class RedisManager:
         Returns:
             True if connected, False otherwise
         """
-        if self._client is None:
+        if self._redis is None:
             return await self.connect()
         return self._available
 
@@ -194,7 +194,7 @@ class RedisManager:
             key = self._make_key("job", job_id)
             # Serialize job data, handling datetime objects
             serialized = json.dumps(job_data, default=self._json_serializer)
-            await self._client.set(key, serialized, ex=ttl or self.default_ttl)
+            await self._redis.set(key, serialized, ex=ttl or self.default_ttl)
             logger.debug("Job stored in Redis: %s", job_id)
             return True
         except Exception as e:
@@ -215,7 +215,7 @@ class RedisManager:
 
         try:
             key = self._make_key("job", job_id)
-            data = await self._client.get(key)
+            data = await self._redis.get(key)
             if data is None:
                 return None
             return json.loads(data)
@@ -244,7 +244,7 @@ class RedisManager:
 
         try:
             key = self._make_key("job", job_id)
-            existing = await self._client.get(key)
+            existing = await self._redis.get(key)
 
             if existing is None:
                 logger.warning("Cannot update non-existent job: %s", job_id)
@@ -256,9 +256,9 @@ class RedisManager:
             serialized = json.dumps(job_data, default=self._json_serializer)
 
             if extend_ttl:
-                await self._client.set(key, serialized, ex=self.default_ttl)
+                await self._redis.set(key, serialized, ex=self.default_ttl)
             else:
-                await self._client.set(key, serialized)
+                await self._redis.set(key, serialized)
 
             logger.debug("Job updated in Redis: %s", job_id)
             return True
@@ -281,7 +281,7 @@ class RedisManager:
 
         try:
             key = self._make_key("job", job_id)
-            result = await self._client.delete(key)
+            result = await self._redis.delete(key)
             logger.debug("Job deleted from Redis: %s (existed: %s)", job_id, result > 0)
             return result > 0
         except Exception as e:
@@ -314,7 +314,7 @@ class RedisManager:
             pattern = self._make_key("job", "*")
             keys = []
 
-            async for key in self._client.scan_iter(match=pattern, count=100):
+            async for key in self._redis.scan_iter(match=pattern, count=100):
                 keys.append(key)
 
             # Sort keys for consistent ordering (newest first)
@@ -325,7 +325,7 @@ class RedisManager:
 
             jobs = []
             for key in keys:
-                data = await self._client.get(key)
+                data = await self._redis.get(key)
                 if data:
                     job = json.loads(data)
                     if status_filter is None or job.get("status") == status_filter:
@@ -353,7 +353,7 @@ class RedisManager:
             pattern = self._make_key("job", "*")
             keys = []
 
-            async for key in self._client.scan_iter(match=pattern, count=100):
+            async for key in self._redis.scan_iter(match=pattern, count=100):
                 keys.append(key)
                 if len(keys) >= limit:
                     break
@@ -385,7 +385,7 @@ class RedisManager:
 
         try:
             full_key = self._make_key("ratelimit", key)
-            pipe = self._client.pipeline()
+            pipe = self._redis.pipeline()
             pipe.incr(full_key)
             pipe.expire(full_key, window_seconds)
             results = await pipe.execute()
@@ -408,7 +408,7 @@ class RedisManager:
 
         try:
             full_key = self._make_key("ratelimit", key)
-            count = await self._client.get(full_key)
+            count = await self._redis.get(full_key)
             return int(count) if count else 0
         except Exception as e:
             logger.error("Failed to get rate limit count: %s", e)
@@ -437,7 +437,7 @@ class RedisManager:
                 key_parts.append(label_str)
 
             key = ":".join(key_parts)
-            await self._client.incr(key)
+            await self._redis.incr(key)
         except Exception as e:
             logger.error("Failed to increment metric: %s", e)
 
@@ -460,7 +460,7 @@ class RedisManager:
 
         try:
             start = datetime.now(timezone.utc)
-            await self._client.ping()
+            await self._redis.ping()
             latency = (datetime.now(timezone.utc) - start).total_seconds() * 1000
 
             result["status"] = "healthy"
@@ -491,25 +491,32 @@ class RedisManager:
 _redis_manager: RedisManager | None = None
 
 
-def get_redis_manager() -> RedisManager:
+def get_redis_manager(force_reload: bool = False) -> RedisManager:
     """Get or create the global Redis manager.
+
+    Args:
+        force_reload: Whether to force creating a new manager instance
 
     Returns:
         RedisManager instance
     """
     global _redis_manager
-    if _redis_manager is None:
-        _redis_manager = RedisManager()
+    if _redis_manager is not None and not force_reload:
+        return _redis_manager
+    _redis_manager = RedisManager()
     return _redis_manager
 
 
-async def init_redis() -> RedisManager:
+async def init_redis(force_reload: bool = False) -> RedisManager:
     """Initialize Redis connection.
+
+    Args:
+        force_reload: Whether to force re-connecting
 
     Returns:
         RedisManager instance
     """
-    manager = get_redis_manager()
+    manager = get_redis_manager(force_reload=force_reload)
     await manager.connect()
     return manager
 

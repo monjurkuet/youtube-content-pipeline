@@ -42,9 +42,11 @@ class OpenVINOWhisperTranscriber:
             device: Device to use (GPU, CPU, or AUTO)
             cache_dir: Model cache directory
         """
+        from src.core.config import get_settings
+        settings = get_settings()
         self.model_id = model_id
         self.device = device or self._detect_device()
-        self.cache_dir = cache_dir or os.path.expanduser("~/.cache/whisper_openvino")
+        self.cache_dir = os.path.expanduser(cache_dir or settings.openvino_cache_dir)
 
         self.model = None
         self.processor = None

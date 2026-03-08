@@ -64,17 +64,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Starting %s v%s", APP_NAME, APP_VERSION)
 
     settings = get_settings()
-    db_manager = get_db_manager()
+    db_manager = get_db_manager(force_reload=True)
     redis_manager = None
 
+    # Initialize database (graceful degradation on failure)
     try:
-        # Initialize database
         await db_manager.init_indexes()
         logger.info("Database indexes initialized")
+    except Exception as e:
+        logger.warning("Database initialization failed (degraded mode): %s", e)
 
-        # Initialize Redis (optional, graceful degradation)
+    # Initialize Redis (optional, graceful degradation)
+    try:
         if settings.redis_enabled:
-            redis_manager = await init_redis()
+            redis_manager = await init_redis(force_reload=True)
             if redis_manager.is_available:
                 logger.info("Redis connection established")
             else:
@@ -84,12 +87,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 )
         else:
             logger.info("Redis disabled in configuration")
-
-        yield
-
     except Exception as e:
-        logger.exception("Startup failed: %s", e)
-        raise
+        logger.warning("Redis initialization failed (degraded mode): %s", e)
+
+    try:
+        yield
 
     finally:
         # Shutdown
@@ -97,12 +99,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         # Close Redis
         if settings.redis_enabled:
-            await close_redis()
-            logger.info("Redis connection closed")
+            try:
+                await close_redis()
+                logger.info("Redis connection closed")
+            except Exception as e:
+                logger.warning("Error closing Redis: %s", e)
 
         # Close database
-        await db_manager.close()
-        logger.info("Database connection closed")
+        try:
+            await db_manager.close()
+            logger.info("Database connection closed")
+        except Exception as e:
+            logger.warning("Error closing database: %s", e)
 
 
 def create_openapi_schema(
@@ -249,7 +257,7 @@ def create_openapi_schema(
     return schema
 
 
-def create_app() -> FastAPI:
+def create_app(force_reload: bool = False) -> FastAPI:
     """Create and configure the FastAPI application.
 
     This factory function creates a new FastAPI application with:
@@ -261,10 +269,21 @@ def create_app() -> FastAPI:
     - Prometheus metrics
     - All routers
 
+    Args:
+        force_reload: Whether to force reloading settings and middleware
+
     Returns:
         Configured FastAPI application
     """
-    settings = get_settings()
+    settings = get_settings(force_reload=force_reload)
+    
+    # Reset Redis manager if needed (to avoid loop conflicts in tests)
+    from src.database.redis import get_redis_manager
+    get_redis_manager(force_reload=force_reload)
+
+    # Reset API key validator if needed
+    from src.api.security import get_api_key_validator
+    get_api_key_validator(force_reload=force_reload)
 
     app = FastAPI(
         title=APP_NAME,
@@ -297,17 +316,41 @@ def create_app() -> FastAPI:
     setup_error_handler(app)
 
     # Add rate limiting middleware
-    setup_rate_limiter(app)
+    setup_rate_limiter(app, force_reload=force_reload)
 
     # Add Prometheus metrics
     setup_prometheus(app)
 
     # Include routers
-    app.include_router(videos_router, prefix="/api/v1")
-    app.include_router(transcripts_router, prefix="/api/v1")
-    app.include_router(channels_router, prefix="/api/v1")
-    app.include_router(stats_router, prefix="/api/v1")
-    app.include_router(health_router)  # Health endpoints at root level
+    from src.api.security import validate_api_key
+    from fastapi import Depends
+
+    app.include_router(
+        videos_router, 
+        prefix="/api/v1",
+        dependencies=[Depends(validate_api_key)]
+    )
+    app.include_router(
+        transcripts_router, 
+        prefix="/api/v1",
+        dependencies=[Depends(validate_api_key)]
+    )
+    app.include_router(
+        channels_router, 
+        prefix="/api/v1",
+        dependencies=[Depends(validate_api_key)]
+    )
+    app.include_router(
+        stats_router, 
+        prefix="/api/v1",
+        dependencies=[Depends(validate_api_key)]
+    )
+    # Health endpoints are usually public, but tests expect them to be protected 
+    # if AUTH_REQUIRE_KEY is true. validate_api_key handles this check internally.
+    app.include_router(
+        health_router,
+        dependencies=[Depends(validate_api_key)]
+    )
 
     logger.info("Application created successfully")
     return app

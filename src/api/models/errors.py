@@ -53,6 +53,11 @@ class ErrorResponse(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc).isoformat(),
         description="ISO 8601 timestamp of error occurrence",
     )
+    # For compatibility with FastAPI default error format
+    detail: Any | None = Field(
+        default=None,
+        description="Alias for message or details for compatibility with FastAPI",
+    )
 
     model_config = {
         "json_schema_extra": {

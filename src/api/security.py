@@ -320,14 +320,17 @@ class APIKeyValidator:
 _api_key_validator: APIKeyValidator | None = None
 
 
-def get_api_key_validator() -> APIKeyValidator:
+def get_api_key_validator(force_reload: bool = False) -> APIKeyValidator:
     """Get or create the global API key validator.
+
+    Args:
+        force_reload: Whether to force creating a new validator
 
     Returns:
         APIKeyValidator instance
     """
     global _api_key_validator
-    if _api_key_validator is None:
+    if _api_key_validator is None or force_reload:
         settings = get_settings()
         _api_key_validator = APIKeyValidator(
             required=settings.auth_require_key,

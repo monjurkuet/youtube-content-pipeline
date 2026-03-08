@@ -1,6 +1,6 @@
 """Pydantic schemas for transcription pipeline."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -57,7 +57,7 @@ class TranscriptDocument(BaseModel):
     segments: list[TranscriptSegment]
 
     # Timestamps
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     analyzed_at: datetime | None = None
 
     def model_dump_for_mongo(self) -> dict[str, Any]:
@@ -118,6 +118,11 @@ class ProcessingResult(BaseModel):
     duration_seconds_total: float = 0.0
     saved_to_db: bool = False
 
+    # Extra info
+    success: bool = True
+    error: str | None = None
+    transcript_id: str | None = None
+
     def model_dump_for_mongo(self) -> dict:
         """Convert to dict suitable for MongoDB storage."""
         data = self.model_dump()
@@ -125,3 +130,17 @@ class ProcessingResult(BaseModel):
         if self.completed_at:
             data["completed_at"] = self.completed_at.isoformat()
         return data
+
+
+class SyncResult(BaseModel):
+    """Result of a channel sync operation."""
+
+    channel_id: str
+    channel_handle: str
+    channel_title: str
+    videos_fetched: int
+    videos_new: int
+    videos_existing: int
+    sync_mode: str = "recent"
+    success: bool = True
+    error: str | None = None

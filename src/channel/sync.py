@@ -1,20 +1,34 @@
 """Channel sync module - syncs channel videos to database."""
 
 import asyncio
-from datetime import datetime
+import logging
+import random
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 
-from src.video.cookie_manager import YouTubeCookieManager
+from src.core.config import get_settings_with_yaml
+from src.core.schemas import SyncResult
+from src.database.manager import MongoDBManager
+from src.video.cookie_manager import get_cookie_manager, YouTubeCookieManager
 
-from .feed_fetcher import fetch_videos
+from .feed_fetcher import fetch_videos, _get_cookie_manager
 from .resolver import resolve_channel_handle
-from .schemas import ChannelDocument, SyncResult, VideoMetadata, VideoMetadataDocument
+from .schemas import ChannelDocument, VideoMetadataDocument
+
+# Re-export for compatibility
+from src.services.video_service import (
+    get_pending_videos,
+    get_failed_videos,
+    reset_failed_transcription,
+    mark_video_transcribed,
+)
 
 console = Console()
-
-# Global cookie manager instance
-_cookie_manager: YouTubeCookieManager | None = None
+logger = logging.getLogger(__name__)
 
 # Persistent event loop for sync_all operations
 _sync_loop: asyncio.AbstractEventLoop | None = None
@@ -25,32 +39,19 @@ def _get_event_loop() -> asyncio.AbstractEventLoop:
     global _sync_loop
     if _sync_loop is None or _sync_loop.is_closed():
         _sync_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(_sync_loop)
     return _sync_loop
 
 
 def _run_async(coro):
-    """Run an async coroutine using the persistent event loop.
-    
-    This avoids "Event loop is closed" errors when calling asyncio.run()
-    multiple times in the same process.
-    """
+    """Run an async coroutine using the persistent event loop."""
     loop = _get_event_loop()
     return loop.run_until_complete(coro)
-
-
-def _get_cookie_manager() -> YouTubeCookieManager:
-    """Get or create cookie manager instance."""
-    global _cookie_manager
-    if _cookie_manager is None:
-        _cookie_manager = YouTubeCookieManager(auto_extract=True)
-    return _cookie_manager
 
 
 def sync_channel(
     handle: str | None = None,
     mode: str = "recent",
-    db_manager=None,
+    db_manager: MongoDBManager | None = None,
     max_videos: int | None = None,
     incremental: bool = False,
     channel_id: str | None = None,
@@ -60,496 +61,226 @@ def sync_channel(
     Sync channel videos to database.
 
     Args:
-        handle: Channel handle (e.g., "@ChartChampions") - optional if channel_id/channel_url provided
-        mode: "recent" for RSS (~15 videos) or "all" for yt-dlp (all videos)
-        db_manager: Optional MongoDB manager instance
-        max_videos: Maximum videos to fetch (None = all)
-        incremental: If True, only fetch metadata for new videos (slower but efficient)
-        channel_id: YouTube channel ID - optional if handle provided
-        channel_url: YouTube channel URL - optional if handle provided
-
-    Returns:
-        SyncResult with sync statistics
+        handle: Channel handle (e.g., "@ChartChampions")
+        mode: "recent" (RSS) or "all" (yt-dlp)
+        db_manager: MongoDBManager instance
+        max_videos: Maximum videos to fetch
+        incremental: Whether to only fetch new videos
+        channel_id: Channel ID (alternative to handle)
+        channel_url: Channel URL (alternative to handle)
     """
-    from src.database import get_db_manager as get_default_db
+    console.print(f"\n[bold blue]Syncing channel: {handle or channel_id or channel_url}[/bold blue]")
 
-    db = db_manager or get_default_db()
+    # 1. Resolve channel metadata
+    if not (channel_id and channel_url):
+        # Need to resolve handle or partial info
+        resolved_id, resolved_url = resolve_channel_handle(
+            handle or channel_id or channel_url
+        )
+        channel_id = resolved_id
+        channel_url = resolved_url
 
-    # Resolve channel handle or use provided channel_id/channel_url
-    if channel_id and channel_url:
-        # Use provided channel_id and channel_url directly
-        pass
-    elif handle:
-        # Resolve channel handle
-        channel_id, channel_url = resolve_channel_handle(handle)
-    else:
-        raise ValueError("Either handle or both channel_id and channel_url must be provided")
-
-    # Fetch videos
-    console.print(f"\n[bold blue]Fetching videos (mode: {mode})...[/bold blue]\n")
-
-    videos_fetched = []
-
-    def progress_callback(count: int):
-        console.print(f"[dim]   Processed {count} videos...[/dim]")
-
-    if mode == "all":
-        if incremental:
-            # Smart incremental sync: fetch IDs first, then only new videos
-            videos_fetched = _fetch_new_videos_only(channel_id, channel_url, db, max_videos)
-        else:
-            videos_fetched = fetch_videos(
-                channel_id,
-                channel_url,
-                "all",
-                max_videos=max_videos,
-            )
-    else:
-        videos_fetched = fetch_videos(channel_id, channel_url, "recent")
-
-    # In incremental mode, no new videos is a success (channel already synced)
-    # In other modes, no videos fetched means something went wrong
-    if not videos_fetched and not incremental:
-        raise RuntimeError("No videos fetched from channel")
-
-    # Handle empty videos list in incremental mode - need to get existing video count from DB
-    if not videos_fetched and incremental:
-        console.print("[yellow]No new videos to sync, updating channel record only...[/yellow]")
-        # Get existing video count from database
-        import asyncio
-
-        async def _get_existing_count():
-            from src.database import MongoDBManager
-
-            async with MongoDBManager() as db:
-                videos = await db.list_videos_by_channel(channel_id, limit=1)
-                # Get total count
-                count = await db.video_metadata.count_documents({"channel_id": channel_id})
-                return count
-
-        existing_count = _run_async(_get_existing_count())
-
-        async def _save_channel_only():
-            from src.database import MongoDBManager
-
-            async with MongoDBManager() as db:
-                # Get existing channel to preserve title
-                existing_channel = await db.get_channel(channel_id)
-                channel_title = (
-                    existing_channel.get("channel_title") if existing_channel else handle.lstrip("@") if handle else channel_id
-                )
-
-                channel_doc = ChannelDocument(
+    # 2. Fetch videos from YouTube
+    console.print(f"[dim]Mode: {mode}[/dim]")
+    
+    # Use feed_fetcher for recent or yt-dlp for all
+    if mode == "recent":
+        # RSS feed limit is ~15
+        videos_fetched = fetch_videos(channel_id, channel_url, mode="recent")
+    elif incremental:
+        # Incremental sync - only new videos
+        async def _fetch_all():
+            async with (db_manager or MongoDBManager()) as db:
+                return await _fetch_new_videos_only_async(
                     channel_id=channel_id,
-                    channel_handle=handle.lstrip("@") if handle else channel_id,
-                    channel_title=channel_title,
                     channel_url=channel_url,
-                    last_synced=datetime.utcnow(),
-                    total_videos_tracked=existing_count,
-                    sync_mode=mode if mode in ("recent", "all") else "recent",
+                    db=db,
+                    max_videos=max_videos
                 )
-                return await db.save_channel(channel_doc)
+        videos_fetched = _run_async(_fetch_all())
+    else:
+        # Full sync - all videos using feed_fetcher
+        videos_fetched = fetch_videos(channel_id, channel_url, mode="all", max_videos=max_videos)
 
-        channel_db_id = _run_async(_save_channel_only())
-        console.print(f"[green]✓ Channel updated (ID: {channel_db_id[:16]}...)[/green]")
-        console.print(f"[green]✓ Channel already in sync ({existing_count} videos)[/green]")
-
+    if not videos_fetched:
+        console.print("[yellow]! No videos found[/yellow]")
         return SyncResult(
             channel_id=channel_id,
-            channel_handle=handle.lstrip("@") if handle else channel_id,
-            channel_title=handle.lstrip("@") if handle else channel_id,
-            sync_mode=mode if mode in ("recent", "all") else "recent",
+            channel_handle=handle or channel_id,
+            channel_title=handle or channel_id,
             videos_fetched=0,
             videos_new=0,
-            videos_existing=existing_count,
+            videos_existing=0,
         )
 
-    # Save channel and videos to database in a single async context
-    import asyncio
-
-    async def _save_all():
-        # Save channel to database
-        console.print("\n[bold blue]Updating channel record...[/bold blue]")
-
-        channel_doc = ChannelDocument(
-            channel_id=channel_id,
-            channel_handle=handle.lstrip("@") if handle else channel_id,
-            channel_title=videos_fetched[0].channel_title or handle or channel_id,
-            channel_url=channel_url,
-            last_synced=datetime.utcnow(),
-            total_videos_tracked=len(videos_fetched),
-            sync_mode=mode if mode in ("recent", "all") else "recent",  # type: ignore
-        )
-
-        channel_db_id = await db.save_channel(channel_doc)
-        console.print(f"[green]✓ Channel saved (ID: {channel_db_id[:16]}...)[/green]")
-
-        # Save videos to database
-        console.print(
-            f"\n[bold blue]Saving {len(videos_fetched)} videos to database...[/bold blue]"
-        )
-
-        videos_new = 0
-        videos_existing = 0
-
-        for video in videos_fetched:
-            video_doc = VideoMetadataDocument(
-                video_id=video.video_id,
+    # 3. Save to database
+    async def _save():
+        async with (db_manager or MongoDBManager()) as db:
+            # Save channel info
+            channel_doc = ChannelDocument(
                 channel_id=channel_id,
-                title=video.title,
-                description=video.description,
-                thumbnail_url=video.thumbnail_url,
-                duration_seconds=video.duration_seconds,
-                view_count=video.view_count,
-                published_at=video.published_at,
-                transcript_status="pending",
-                transcript_id=None,
-                synced_at=datetime.utcnow(),
+                channel_handle=handle.lstrip("@") if handle else channel_id,
+                channel_title=videos_fetched[0].channel_title or handle or channel_id,
+                channel_url=channel_url,
+                last_synced=datetime.now(timezone.utc),
+                total_videos_tracked=len(videos_fetched),
+                sync_mode=mode,
             )
+            await db.save_channel(channel_doc)
 
-            try:
-                result = await db.save_video_metadata(video_doc)
-                if result.get("new", False):
-                    videos_new += 1
-                else:
-                    videos_existing += 1
-            except Exception as e:
-                console.print(
-                    f"[yellow]Warning: Failed to save video {video.video_id}: {e}[/yellow]"
+            # Save videos
+            new_count = 0
+            existing_count = 0
+            for video in videos_fetched:
+                # Basic check - normally we would check before fetching full metadata
+                # but for RSS it doesn't matter much.
+                video_doc = VideoMetadataDocument(
+                    video_id=video.video_id,
+                    channel_id=channel_id,
+                    title=video.title,
+                    description=video.description,
+                    thumbnail_url=video.thumbnail_url,
+                    duration_seconds=video.duration_seconds,
+                    view_count=video.view_count,
+                    published_at=video.published_at,
                 )
-                videos_existing += 1  # Assume it exists
+                
+                # Check if exists
+                existing = await db.video_metadata.find_one({"video_id": video.video_id})
+                if existing:
+                    existing_count += 1
+                else:
+                    await db.save_video_metadata(video_doc)
+                    new_count += 1
+            
+            return new_count, existing_count
 
-        console.print("\n[green]✓ Sync complete![/green]")
-        console.print(f"   [dim]New videos: {videos_new}[/dim]")
-        console.print(f"   [dim]Existing videos: {videos_existing}[/dim]")
+    new_count, exist_count = _run_async(_save())
 
-        return channel_doc, videos_new, videos_existing
-
-    # Note: asyncio.run() is safe here because sync_channel() is designed to be
-    # called from synchronous contexts (CLI commands).
-    channel_doc, videos_new, videos_existing = _run_async(_save_all())
+    console.print(f"[green]✓ Sync complete: {new_count} new, {exist_count} existing[/green]\n")
 
     return SyncResult(
         channel_id=channel_id,
-        channel_handle=handle.lstrip("@") if handle else channel_id,
-        channel_title=channel_doc.channel_title,
-        sync_mode=mode if mode in ("recent", "all") else "recent",  # type: ignore
+        channel_handle=handle or channel_id,
+        channel_title=handle or channel_id,
         videos_fetched=len(videos_fetched),
-        videos_new=videos_new,
-        videos_existing=videos_existing,
+        videos_new=new_count,
+        videos_existing=exist_count,
     )
 
 
-def get_pending_videos(
-    channel_id: str | None = None, db_manager=None
-) -> list[VideoMetadataDocument]:
-    """
-    Get videos pending transcription.
-
-    Args:
-        channel_id: Optional channel ID filter
-        db_manager: Optional MongoDB manager instance
-
-    Returns:
-        List of VideoMetadataDocument objects
-    """
-    import asyncio
-
-    from src.database import MongoDBManager
-
-    async def _fetch():
-        async with MongoDBManager() as db:
-            return await db.get_pending_transcription_videos(channel_id)
-
-    pending = _run_async(_fetch())
-
-    return [
-        VideoMetadataDocument(
-            video_id=v["video_id"],
-            channel_id=v["channel_id"],
-            title=v["title"],
-            description=v.get("description"),
-            thumbnail_url=v.get("thumbnail_url"),
-            duration_seconds=v.get("duration_seconds"),
-            view_count=v.get("view_count"),
-            published_at=datetime.fromisoformat(v["published_at"])
-            if v.get("published_at")
-            else None,
-            transcript_status=v["transcript_status"],
-            transcript_id=v.get("transcript_id"),
-            synced_at=datetime.fromisoformat(v["synced_at"])
-            if v.get("synced_at")
-            else datetime.utcnow(),
-        )
-        for v in pending
-    ]
-
-
-def get_failed_videos(
-    channel_id: str | None = None, db_manager=None
-) -> list[VideoMetadataDocument]:
-    """
-    Get videos with failed transcription status.
-
-    Args:
-        channel_id: Optional channel ID filter
-        db_manager: Optional MongoDB manager instance
-
-    Returns:
-        List of VideoMetadataDocument objects
-    """
-    import asyncio
-    from datetime import datetime
-    from src.database import MongoDBManager
-
-    async def _fetch():
-        async with MongoDBManager() as db:
-            return await db.get_failed_transcription_videos(channel_id)
-
-    failed = _run_async(_fetch())
-
-    return [
-        VideoMetadataDocument(
-            video_id=v["video_id"],
-            channel_id=v["channel_id"],
-            title=v["title"],
-            description=v.get("description"),
-            thumbnail_url=v.get("thumbnail_url"),
-            duration_seconds=v.get("duration_seconds"),
-            view_count=v.get("view_count"),
-            published_at=datetime.fromisoformat(v["published_at"])
-            if v.get("published_at")
-            else None,
-            transcript_status=v["transcript_status"],
-            transcript_id=v.get("transcript_id"),
-            transcript_error=v.get("transcript_error"),
-            transcript_error_category=v.get("transcript_error_category"),
-            synced_at=datetime.fromisoformat(v["synced_at"])
-            if v.get("synced_at")
-            else datetime.utcnow(),
-        )
-        for v in failed
-    ]
-
-
-def reset_failed_transcription(
-    video_id: str,
-    db_manager=None,
-) -> bool:
-    """
-    Reset failed transcription status to pending for retry.
-
-    Args:
-        video_id: Video ID
-        db_manager: Optional MongoDB manager instance
-
-    Returns:
-        True if successful
-    """
-    import asyncio
-    from datetime import datetime
-    from src.database import MongoDBManager
-
-    async def _reset():
-        async with MongoDBManager() as db:
-            result = await db.video_metadata.update_one(
-                {"video_id": video_id},
-                {
-                    "$set": {
-                        "transcript_status": "pending",
-                        "transcript_error": None,  # Clear error message
-                        "updated_at": datetime.utcnow().isoformat()
-                    }
-                },
-            )
-            return result.modified_count > 0
-
-    return _run_async(_reset())
-
-
-def mark_video_transcribed(
-    video_id: str,
-    transcript_id: str,
-    db_manager=None,
-) -> bool:
-    """
-    Mark video as transcribed.
-
-    Args:
-        video_id: Video ID
-        transcript_id: Transcript document ID
-        db_manager: Optional MongoDB manager instance
-
-    Returns:
-        True if successful
-    """
-    import asyncio
-
-    from src.database import MongoDBManager
-
-    async def _mark():
-        async with MongoDBManager() as db:
-            return await db.mark_transcript_completed(video_id, transcript_id)
-
-    return _run_async(_mark())
-
-
-def _fetch_new_videos_only(
+async def _fetch_new_videos_only_async(
     channel_id: str,
     channel_url: str,
     db,
     max_videos: int | None = None,
-) -> list[VideoMetadata]:
-    """
-    Fetch only NEW videos (not in database) with full metadata.
-
-    Strategy:
-    1. Fast fetch video IDs with --flat-playlist
-    2. Check which IDs are already in DB
-    3. Only fetch full metadata for new videos with --simulate
-
-    Args:
-        channel_id: YouTube channel ID
-        channel_url: YouTube channel URL
-        db: Database manager
-        max_videos: Maximum videos to check
-
-    Returns:
-        List of NEW VideoMetadata objects
-    """
-    import asyncio
-    import json
+):
+    """Async helper for full sync with yt-dlp."""
+    # This logic is quite complex, it uses subprocess to call yt-dlp
+    # For now let's keep the existing logic but refactored for async
+    from .feed_fetcher import VideoMetadata
     import subprocess
+    import json
 
-    console.print("[dim]Step 1: Fetching video IDs (fast mode)...[/dim]")
+    # 1. Get existing IDs from DB
+    cursor = db.video_metadata.find({"channel_id": channel_id}, {"video_id": 1})
+    docs = await cursor.to_list(length=None)
+    existing_ids = {doc["video_id"] for doc in docs}
 
+    # 2. Get all IDs from channel using yt-dlp --flat-playlist
+    cmd = [
+        "yt-dlp",
+        "--flat-playlist",
+        "--get-id",
+        "--no-warnings",
+        "--quiet",
+        channel_url,
+    ]
+    
+    # Add cookies if available
+    cookie_manager = get_cookie_manager()
+    cookie_manager.ensure_cookies()
+    cmd.extend(cookie_manager.get_cookie_args())
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await process.communicate()
+        all_ids = stdout.decode().strip().splitlines()
+    except Exception as e:
+        logger.error(f"yt-dlp failed to fetch IDs: {e}")
+        return []
+
+    if max_videos:
+        all_ids = all_ids[:max_videos]
+
+    # 3. Filter for NEW IDs
+    new_ids = [vid for vid in all_ids if vid not in existing_ids]
+    if not new_ids:
+        return []
+
+    # 4. Fetch full metadata for NEW IDs
+    console.print(f"[dim]Fetching metadata for {len(new_ids)} new videos...[/dim]")
+    
+    import subprocess
+    import json
+    
+    videos = []
     # Get cookie args
     cookie_manager = _get_cookie_manager()
     cookie_manager.ensure_cookies()
     cookie_args = cookie_manager.get_cookie_args()
-
-    # Step 1: Fast fetch all video IDs
-    cmd = [
-        "yt-dlp",
-        "--flat-playlist",
-        "--dump-json",
-        "--no-warnings",
-        "--quiet",
-    ]
-    cmd.extend(cookie_args)  # Add cookies if available
-    if max_videos:
-        cmd.append(f"--playlist-end={max_videos}")
-    cmd.append(channel_url)
-
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        youtube_video_ids = set()
-        video_titles = {}
-
-        for line in result.stdout.strip().split("\n"):
-            if line.strip():
-                try:
-                    data = json.loads(line)
-                    video_id = data.get("id")
-                    if video_id:
-                        youtube_video_ids.add(video_id)
-                        video_titles[video_id] = data.get("title", "Unknown")
-                except json.JSONDecodeError:
-                    continue
-
-        console.print(f"[dim]   Found {len(youtube_video_ids)} videos on YouTube[/dim]")
-
-        # Step 2: Check which are already in DB
-        async def _get_existing_ids():
-            from src.database import MongoDBManager
-
-            async with MongoDBManager() as db:
-                existing = await db.list_videos_by_channel(channel_id, limit=max_videos or 10000)
-                return {v["video_id"] for v in existing}
-
-        existing_ids = _run_async(_get_existing_ids())
-        console.print(f"[dim]   {len(existing_ids)} videos already in database[/dim]")
-
-        # Step 3: Find new videos
-        new_video_ids = youtube_video_ids - existing_ids
-        console.print(f"[dim]   {len(new_video_ids)} NEW videos to fetch[/dim]")
-
-        if not new_video_ids:
-            console.print("[green]✓ No new videos![/green]")
-            return []
-
-        # Step 4: Fetch full metadata for new videos only
-        console.print(
-            f"\n[dim]Step 2: Fetching metadata for {len(new_video_ids)} new videos...[/dim]"
-        )
-
-        new_videos = []
-        for i, video_id in enumerate(new_video_ids, 1):
-            title = video_titles.get(video_id, video_id)[:50]
-            console.print(f"[dim]   {i}/{len(new_video_ids)} Fetching: {title}...[/dim]")
-
+    
+    # Process in batches to show progress
+    batch_size = 10
+    for i in range(0, len(new_ids), batch_size):
+        batch = new_ids[i : i + batch_size]
+        batch_num = i // batch_size + 1
+        total_batches = (len(new_ids) + batch_size - 1) // batch_size
+        
+        console.print(f"[dim]   Batch {batch_num}/{total_batches}: fetching {len(batch)} videos...[/dim]")
+        
+        for video_id in batch:
+            cmd = [
+                "yt-dlp",
+                "--simulate",
+                "--dump-json",
+                "--no-warnings",
+            ]
+            cmd.extend(cookie_args)
+            cmd.append(f"https://www.youtube.com/watch?v={video_id}")
+            
             try:
-                cmd = [
-                    "yt-dlp",
-                    "--simulate",
-                    "--dump-json",
-                    "--no-warnings",
-                    "--quiet",
-                ]
-                cmd.extend(cookie_args)  # Add cookies if available
-                cmd.append(f"https://www.youtube.com/watch?v={video_id}")
-
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-
-                stderr = result.stderr.lower()
-
-                # Check for age-restricted or private videos
-                if "age" in stderr and "restrict" in stderr:
-                    console.print(f"[dim]   ⊘ Skipped (age-restricted): {video_id}[/dim]")
-                    continue
-                if "private" in stderr or "unavailable" in stderr:
-                    console.print(f"[dim]   ⊘ Skipped (private): {video_id}[/dim]")
-                    continue
-
                 if result.returncode == 0 and result.stdout.strip():
                     data = json.loads(result.stdout.strip())
-
-                    # Parse date
+                    console.print(f"[dim]      Parsed: {data.get('id')}, {data.get('title')[:30] if data.get('title') else 'No title'}[/dim]")
+                    
+                    # Parse upload date
                     published_at = None
                     upload_date = data.get("upload_date")
                     if upload_date:
                         try:
                             from datetime import datetime
-
                             published_at = datetime.strptime(upload_date, "%Y%m%d")
                         except ValueError:
                             pass
-
-                    video = VideoMetadata(
-                        video_id=video_id,
-                        title=data.get("title", video_titles.get(video_id, "Unknown")),
-                        description=data.get("description"),
-                        thumbnail_url=data.get("thumbnail"),
-                        duration_seconds=int(data.get("duration"))
-                        if data.get("duration")
-                        else None,
-                        view_count=int(data.get("view_count")) if data.get("view_count") else None,
-                        published_at=published_at,
+                    
+                    videos.append(VideoMetadata(
+                        video_id=data.get("id", ""),
+                        title=data.get("title", ""),
+                        description=data.get("description", ""),
                         channel_id=channel_id,
-                        channel_title=data.get("channel") or data.get("uploader"),
-                    )
-                    new_videos.append(video)
-
+                        channel_title=data.get("channel", ""),
+                        thumbnail_url=data.get("thumbnail", ""),
+                        duration_seconds=data.get("duration"),
+                        view_count=data.get("view_count"),
+                        published_at=published_at,
+                    ))
             except Exception as e:
-                console.print(f"[yellow]   Warning: Failed to fetch {video_id}: {e}[/yellow]")
+                console.print(f"[yellow]   Warning: failed to fetch {video_id}: {e}[/yellow]")
                 continue
-
-        console.print(f"\n[green]✓ Fetched {len(new_videos)} new videos with full metadata[/green]")
-        return new_videos
-
-    except subprocess.TimeoutExpired:
-        console.print("[red]Error: Timeout fetching video list[/red]")
-        return []
-    except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        return []
+    
+    console.print(f"[green]✓ Fetched metadata for {len(videos)} new videos[/green]")
+    return videos

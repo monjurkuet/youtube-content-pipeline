@@ -287,6 +287,13 @@ async def tool_add_channels_from_videos(
     )
 
 
+@mcp.tool(
+    name="list_channels",
+    description=(
+        "List all tracked YouTube channels. "
+        "Returns all channels with their video counts."
+    ),
+)
 async def tool_list_channels(limit: int = 100) -> dict[str, Any]:
     """List all tracked channels.
 
@@ -313,34 +320,6 @@ async def tool_remove_channel(channel_id: str) -> dict[str, Any]:
         Confirmation message
     """
     return await remove_channel(channel_id=channel_id)
-
-
-@mcp.tool(
-    name="list_channel_videos",
-    description=(
-        "List videos for a specific channel. Returns video metadata sorted by publication date."
-    ),
-)
-async def tool_list_channel_videos(
-    channel_id: str,
-    limit: int = 100,
-    offset: int = 0,
-) -> dict[str, Any]:
-    """List videos for a channel.
-
-    Args:
-        channel_id: YouTube channel ID
-        limit: Maximum number of videos to return
-        offset: Number of videos to skip
-
-    Returns:
-        List of video metadata
-    """
-    return await list_channel_videos(
-        channel_id=channel_id,
-        limit=limit,
-        offset=offset,
-    )
 
 
 # ============================================================================
