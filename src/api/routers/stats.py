@@ -79,7 +79,7 @@ class StatsResponse(BaseModel):
                         "videos_failed": 50,
                         "transcripts_by_source": {
                             "youtube_auto": 800,
-                            "whisper_openvino": 400,
+                            "groq_whisper": 400,
                         },
                         "active_jobs": 3,
                         "timestamp": "2024-01-15T10:30:00Z",

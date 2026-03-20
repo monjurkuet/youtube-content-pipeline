@@ -58,13 +58,15 @@ Environment variables take precedence over YAML configuration.
 | `PROMETHEUS_ENABLED` | Enable Prometheus metrics | `true` | No |
 | `PROMETHEUS_PATH` | Metrics endpoint path | `/metrics` | No |
 
-### OpenVINO Whisper Configuration
+### Groq Whisper API Configuration
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `OPENVINO_WHISPER_MODEL` | HuggingFace model ID | `openai/whisper-base` | No |
-| `OPENVINO_DEVICE` | Device (`AUTO`, `GPU`, `CPU`) | `AUTO` | No |
-| `OPENVINO_CACHE_DIR` | Model cache directory | `~/.cache/whisper_openvino` | No |
+| `GROQ_API_KEY` | Groq API key | - | Yes |
+| `GROQ_WHISPER_MODEL` | Whisper model to use | `whisper-large-v3` | No |
+| `GROQ_CHUNK_DURATION` | Chunk duration in seconds | `600` | No |
+| `GROQ_CHUNK_OVERLAP` | Chunk overlap in seconds | `5` | No |
+| `GROQ_MAX_FILE_SIZE_MB` | Max file size before chunking | `25` | No |
 
 ### Audio Processing Configuration
 
@@ -134,11 +136,12 @@ batch:
   default_size: 5       # Videos per batch
   show_progress: true
 
-# Whisper Settings
-whisper:
-  audio_format: mp3
-  audio_bitrate: 128k
-  chunk_length: 30
+# Groq Whisper API Settings
+groq:
+  whisper_model: whisper-large-v3
+  chunk_duration: 600
+  chunk_overlap: 5
+  max_file_size_mb: 25
 
 # Pipeline Settings
 pipeline:
@@ -182,15 +185,16 @@ Batch processing configuration.
 | `default_size` | integer | `5` | Default videos per batch |
 | `show_progress` | boolean | `true` | Show progress bar |
 
-#### whisper
+#### groq
 
-Whisper transcription settings.
+Groq Whisper API settings.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `audio_format` | string | `mp3` | Audio format |
-| `audio_bitrate` | string | `128k` | Audio bitrate |
-| `chunk_length` | integer | `30` | Chunk length (seconds) |
+| `whisper_model` | string | `whisper-large-v3` | Whisper model to use |
+| `chunk_duration` | integer | `600` | Chunk duration (seconds) |
+| `chunk_overlap` | integer | `5` | Chunk overlap (seconds) |
+| `max_file_size_mb` | integer | `25` | Max file size before chunking (MB) |
 
 #### pipeline
 
@@ -556,7 +560,7 @@ REDIS_ENABLED=true
 API_KEY=your-secret-key
 
 # OpenVINO Whisper
-OPENVINO_WHISPER_MODEL=openai/whisper-base
+OPENVINO_WHISPER_MODEL=openai/whisper-medium
 OPENVINO_DEVICE=AUTO
 ```
 

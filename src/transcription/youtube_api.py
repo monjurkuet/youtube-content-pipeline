@@ -46,12 +46,12 @@ class YouTubeAPIProvider:
             transcript_list = self._api.list(video_id)
 
             try:
-                # Try requested language
+                # Try requested language first
                 transcript = transcript_list.find_transcript([language])
             except NoTranscriptFound:
-                # Fallback to any manual transcript
+                # Fallback to any manual transcript with language preference
                 try:
-                    transcript = transcript_list.find_manually_created_transcript()
+                    transcript = transcript_list.find_manually_created_transcript([language, "en"])
                 except NoTranscriptFound:
                     # Fallback to generated transcript
                     transcript = transcript_list.find_generated_transcript([language, "en"])

@@ -236,7 +236,7 @@ class TestErrorResponseFormat:
         When: Check headers
         Then: Content-Type is application/json
         """
-        response = client.get("/api/v1/transcripts/nonexistent123")
+        response = client.get("/api/v1/transcripts/nonexisten1")  # 11 chars, not in DB
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
         assert "application/json" in response.headers["content-type"]

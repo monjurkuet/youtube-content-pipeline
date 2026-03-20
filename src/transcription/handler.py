@@ -13,7 +13,7 @@ from src.core.schemas import RawTranscript
 from src.video.cookie_manager import get_cookie_manager
 from src.transcription.youtube_api import YouTubeAPIProvider
 from src.transcription.youtube_downloader import YouTubeDownloader, ErrorCategory
-from src.transcription.whisper_provider import WhisperProvider, check_intel_gpu
+from src.transcription.whisper_provider import WhisperProvider
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -83,9 +83,6 @@ class TranscriptionHandler:
 
     def _transcribe_with_whisper(self, audio_path: str) -> RawTranscript:
         return self.whisper_provider.transcribe(audio_path)
-
-    def _check_intel_gpu(self) -> bool:
-        return check_intel_gpu()
 
 
 def identify_source_type(source: str) -> tuple[str, str]:

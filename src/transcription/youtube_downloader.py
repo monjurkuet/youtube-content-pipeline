@@ -67,9 +67,14 @@ def _ensure_js_runtime() -> tuple[bool, str]:
 
 
 def _get_yt_dlp_base_cmd(output_path: Path) -> list[str]:
-    """Build base yt-dlp command with recommended args for 2026 YouTube."""
+    """Build base yt-dlp command with recommended args for audio extraction."""
+    # Use system yt-dlp (2026.03.17+) which has better JS challenge support
+    yt_dlp_cmd = "/usr/local/bin/yt-dlp"
+    if not os.path.isfile(yt_dlp_cmd):
+        yt_dlp_cmd = "yt-dlp"  # Fallback to PATH version
+
     cmd = [
-        "yt-dlp",
+        yt_dlp_cmd,
         "--quiet",
         "--no-warnings",
         "--extract-audio",
@@ -77,22 +82,19 @@ def _get_yt_dlp_base_cmd(output_path: Path) -> list[str]:
         "--audio-quality", "0",
         "--output", str(output_path),
         "--no-playlist",
+        # Enable remote components for JS challenge solving (fixes 403 errors)
+        "--remote-components", "ejs:github",
     ]
 
-    # Add 2026-specific extractor arguments
-    # YouTube now blocks outdated deciphering; we need to force modern approaches
-    cmd.extend([
-        "--extractor-args", "youtube:player-client=web,android;player-skip=web_embedded_client_config",
-        "--vcodec", "none",  # Don't waste time on video streams if we only want audio
-    ])
+    # Use bun as JS runtime for better YouTube challenge solving
+    js_runtime = _find_js_runtime("bun")
+    if js_runtime:
+        cmd.extend(["--js-runtimes", f"{js_runtime[0]}:{js_runtime[1]}"])
 
-    # Add JS runner for signature deciphering
-    runtime = _find_js_runtime()
-    if runtime:
-        runtime_name, runtime_path = runtime
-        cmd.extend(["--javascript-host", runtime_name])
-        # Note: some versions of yt-dlp use different flags or just auto-detect
-        # This is a precaution for restricted environments
+    # Use modern extractor args
+    cmd.extend([
+        "--extractor-args", "youtube:player-client=web,android",
+    ])
 
     return cmd
 
@@ -105,7 +107,12 @@ class YouTubeDownloader:
         self.cookie_manager = cookie_manager or get_cookie_manager()
 
     def check_video_availability(self, video_id: str) -> tuple[bool, str, ErrorCategory]:
-        """Check if video is available for transcription using yt-dlp."""
+        """Check if video is available for transcription using yt-dlp.
+        
+        Note: We don't use cookies here because yt-dlp with cookies causes
+        "Requested format is not available" errors with --flat-playlist.
+        Video metadata is public and doesn't require authentication.
+        """
         try:
             cmd = [
                 "yt-dlp",
@@ -115,11 +122,7 @@ class YouTubeDownloader:
                 "--quiet",
                 f"https://www.youtube.com/watch?v={video_id}",
             ]
-
-            self.cookie_manager.ensure_cookies()
-            cookie_args = self.cookie_manager.get_cookie_args()
-            if cookie_args:
-                cmd.extend(cookie_args)
+            # Note: No cookies - video metadata is public
 
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
 
@@ -195,12 +198,6 @@ class YouTubeDownloader:
             cmd = _get_yt_dlp_base_cmd(output_path)
             cmd.insert(2, "-f")
             cmd.insert(3, format_option)
-
-            if self.cookie_manager.ensure_cookies():
-                cookie_args = self.cookie_manager.get_cookie_args()
-                if cookie_args:
-                    cmd.extend(cookie_args)
-
             cmd.append(url)
 
             try:
@@ -211,27 +208,26 @@ class YouTubeDownloader:
                 error_detail = e.stderr if e.stderr else str(e)
                 reason, category = self.classify_error(error_detail)
 
-                if "No video formats found" in error_detail and "--cookies" in " ".join(cmd):
-                    # Retry without cookies
-                    cmd_no_cookies = _get_yt_dlp_base_cmd(output_path)
-                    cmd_no_cookies.insert(2, "-f")
-                    cmd_no_cookies.insert(3, format_option)
-                    cmd_no_cookies.append(url)
-                    try:
-                        subprocess.run(cmd_no_cookies, check=True, timeout=300, capture_output=True, text=True)
-                        return self._find_audio_file(video_id, output_path)
-                    except Exception as e2:
-                        error_detail = str(e2)
-                        reason, category = self.classify_error(error_detail)
-
                 if category == "temporary_block":
                     consecutive_403_errors += 1
                     timestamp = datetime.now(timezone.utc).isoformat()
                     logger.warning(f"403 error detected at {timestamp} (consecutive: {consecutive_403_errors})")
+                    # Retry with cookies for 403 errors
                     self.cookie_manager.invalidate_cache()
                     time.sleep(5)
                     self.cookie_manager.ensure_cookies()
-                    continue
+                    cookie_args = self.cookie_manager.get_cookie_args()
+                    if cookie_args:
+                        cmd_with_cookies = _get_yt_dlp_base_cmd(output_path)
+                        cmd_with_cookies.insert(2, "-f")
+                        cmd_with_cookies.insert(3, format_option)
+                        cmd_with_cookies.extend(cookie_args)
+                        cmd_with_cookies.append(url)
+                        try:
+                            subprocess.run(cmd_with_cookies, check=True, timeout=300, capture_output=True, text=True)
+                            return self._find_audio_file(video_id, output_path)
+                        except Exception:
+                            continue
 
                 if category in ["private", "members_only", "age_restricted", "geo_restricted", "live_stream", "unavailable"]:
                     from src.core.exceptions import WhisperError
@@ -239,20 +235,6 @@ class YouTubeDownloader:
 
                 if "Requested format is not available" in error_detail:
                     continue
-
-        # Try browser cookies as final fallback
-        browsers = self.cookie_manager.get_available_browsers() or ["chrome"]
-        for browser in browsers:
-            try:
-                browser_cmd = _get_yt_dlp_base_cmd(output_path)
-                browser_cmd.insert(2, "-f")
-                browser_cmd.insert(3, "bestaudio/best")
-                browser_cmd.extend(["--cookies-from-browser", browser])
-                browser_cmd.append(url)
-                subprocess.run(browser_cmd, check=True, timeout=300, capture_output=True, text=True)
-                return self._find_audio_file(video_id, output_path)
-            except Exception:
-                continue
 
         # Last try without cookies
         final_cmd = _get_yt_dlp_base_cmd(output_path)

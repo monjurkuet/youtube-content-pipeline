@@ -11,7 +11,7 @@ A production-grade API for YouTube video transcription and transcript management
 - **Rate Limiting**: Configurable delays to prevent IP blocking (2-5s default)
 - **Retry Logic**: Exponential backoff for rate-limited requests
 - **YouTube API Cookie Support**: Passes browser cookies to API for less detectable requests
-- **OpenVINO Whisper**: Optimized transcription with GPU/CPU support
+- **Groq Whisper API**: Cloud-based transcription with automatic chunking
 
 ### API Features
 - **REST API**: FastAPI endpoints for async transcription jobs
@@ -97,6 +97,10 @@ uv run python -m src.cli channel add-from-videos \
 uv run python -m src.cli cookie status      # Check cookie status
 uv run python -m src.cli cookie extract      # Extract cookies from Chrome
 uv run python -m src.cli cookie invalidate    # Force re-extraction
+
+# Utility commands
+uv run python -m src.cli utils check-dependencies  # Check yt-dlp, Bun, Deno
+uv run python -m src.cli utils version             # Show version info
 
 # Sync latest videos (RSS feed, ~15 videos, 2 seconds)
 uv run python -m src.cli channel sync @ChartChampions
@@ -238,6 +242,8 @@ chmod +x scripts/launch-services.sh
 | `DELETE` | `/api/v1/channels/{channel_id}` | Remove channel from tracking |
 | `POST` | `/api/v1/channels/{channel_id}/sync` | Trigger channel sync |
 | `GET` | `/api/v1/channels/{channel_id}/videos` | Get channel videos |
+| `GET` | `/api/v1/channels/{channel_id}/stats` | Get channel statistics |
+| `POST` | `/api/v1/channels/sync-all` | Sync all tracked channels |
 | `GET` | `/api/v1/stats/` | Get system statistics |
 | `GET` | `/health` | Basic health check |
 | `GET` | `/health/ready` | Readiness probe |
@@ -273,10 +279,12 @@ REDIS_ENABLED=true
 API_KEYS=key1,key2,key3
 AUTH_REQUIRE_KEY=false
 
-# OpenVINO Whisper
-OPENVINO_WHISPER_MODEL=openai/whisper-base
-OPENVINO_DEVICE=AUTO
-OPENVINO_CACHE_DIR=~/.cache/whisper_openvino
+# Groq Whisper API
+GROQ_API_KEY=your_groq_api_key_here
+GROQ_WHISPER_MODEL=whisper-large-v3
+GROQ_CHUNK_DURATION=600
+GROQ_CHUNK_OVERLAP=5
+GROQ_MAX_FILE_SIZE_MB=25
 
 # Prometheus
 PROMETHEUS_ENABLED=true
@@ -312,11 +320,12 @@ batch:
   default_size: 5       # Default videos per batch
   show_progress: true
 
-# Whisper Settings
-whisper:
-  audio_format: mp3
-  audio_bitrate: 128k
-  chunk_length: 30
+# Groq Whisper API Settings
+groq:
+  whisper_model: whisper-large-v3
+  chunk_duration: 600
+  chunk_overlap: 5
+  max_file_size_mb: 25
 
 # Pipeline Settings
 pipeline:
@@ -335,10 +344,12 @@ Environment variables take precedence over `config.yaml`:
 MONGODB_URL=mongodb://localhost:27017
 MONGODB_DATABASE=video_pipeline
 
-# OpenVINO Whisper
-OPENVINO_WHISPER_MODEL=openai/whisper-base
-OPENVINO_DEVICE=AUTO  # AUTO, GPU, or CPU
-OPENVINO_CACHE_DIR=~/.cache/whisper_openvino
+# Groq Whisper API
+GROQ_API_KEY=your_groq_api_key_here
+GROQ_WHISPER_MODEL=whisper-large-v3
+GROQ_CHUNK_DURATION=600
+GROQ_CHUNK_OVERLAP=5
+GROQ_MAX_FILE_SIZE_MB=25
 ```
 
 ## MCP Integration
@@ -424,7 +435,7 @@ YouTube URL / Local Video
     |
 Step 1: Get Transcript
     ├── YouTube Transcript API (fast)
-    └── Fallback: yt-dlp + OpenVINO Whisper (with cookies)
+    └── Fallback: yt-dlp + Groq Whisper API (with cookies)
     |
 Step 2: Save to MongoDB
     └── Full transcript with timestamps
@@ -514,14 +525,21 @@ See `CHANNEL_SYNC_GUIDE.md` for detailed documentation.
 ```
 src/
 ├── __init__.py                 # Package exports
-├── cli.py                      # CLI interface
-├── database.py                 # MongoDB integration
+├── __main__.py                 # Package entry point
 ├── channel/                    # Channel tracking module
 │   ├── __init__.py
 │   ├── resolver.py            # Handle → Channel ID
 │   ├── feed_fetcher.py        # RSS + yt-dlp fetching
 │   ├── sync.py                # Sync logic
 │   └── schemas.py             # Channel/Video schemas
+├── cli/                        # CLI interface
+│   ├── __init__.py            # Main CLI entry
+│   ├── __main__.py            # Module entry point
+│   └── commands/
+│       ├── channel.py         # Channel commands
+│       ├── cookie.py          # Cookie management
+│       ├── transcription.py   # Transcription commands
+│       └── utils.py           # Utility commands
 ├── api/
 │   ├── main.py                # FastAPI app
 │   ├── app.py                 # App factory
@@ -546,17 +564,25 @@ src/
 │   ├── constants.py           # Application constants
 │   ├── exceptions.py          # Custom exceptions
 │   ├── schemas.py             # Pydantic models
-│   └── logging_config.py      # Logging configuration
+│   ├── logging_config.py      # Logging configuration
+│   ├── http_session.py        # HTTP session management
+│   └── utils.py               # Utility functions
+├── services/                   # Business logic services
+│   ├── channel_service.py     # Channel operations
+│   ├── transcription_service.py # Transcription logic
+│   └── video_service.py       # Video operations
 ├── pipeline/
 │   └── transcript.py          # Main pipeline
 ├── transcription/
 │   ├── handler.py             # Transcription with fallback
-│   └── whisper_openvino.py    # OpenVINO Whisper
+│   ├── groq_provider.py       # Groq Whisper API provider
+│   ├── whisper_provider.py    # Whisper provider abstraction
+│   ├── youtube_api.py         # YouTube transcript API
+│   └── youtube_downloader.py  # yt-dlp integration
 ├── video/
 │   └── cookie_manager.py      # Browser cookie management
 ├── database/
 │   ├── manager.py             # Database manager
-│   ├── models.py              # Database models
 │   └── redis.py               # Redis integration
 └── mcp/
     ├── server.py              # MCP server
@@ -669,7 +695,6 @@ uv run pytest tests/test_pipeline.py -v
 | [CONFIGURATION_REFERENCE.md](CONFIGURATION_REFERENCE.md) | All configuration options |
 | [CHANNEL_SYNC_GUIDE.md](CHANNEL_SYNC_GUIDE.md) | Channel sync strategies |
 | [AGENTS.md](AGENTS.md) | Development guidelines |
-| [INTEL_ARC_GPU_GUIDE.md](INTEL_ARC_GPU_GUIDE.md) | Intel Arc GPU setup |
 
 ### Interactive Documentation
 

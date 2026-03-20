@@ -11,13 +11,15 @@
 - You are allowed to read, modify and write .env files.
 - CORS allows all origins.
 
-## OpenVINO Whisper
+## Groq Whisper API
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `OPENVINO_WHISPER_MODEL` | HuggingFace model ID | `openai/whisper-base` |
-| `OPENVINO_DEVICE` | Device to use (AUTO, GPU, CPU) | `AUTO` |
-| `OPENVINO_CACHE_DIR` | Model cache directory | `~/.cache/whisper_openvino` |
+| `GROQ_API_KEY` | Groq API key (required) | - |
+| `GROQ_WHISPER_MODEL` | Whisper model to use | `whisper-large-v3` |
+| `GROQ_CHUNK_DURATION` | Chunk duration in seconds | `600` |
+| `GROQ_CHUNK_OVERLAP` | Chunk overlap in seconds | `5` |
+| `GROQ_MAX_FILE_SIZE_MB` | Max file size before chunking | `25` |
 
 ---
 
@@ -26,14 +28,21 @@
 ```
 src/
 ├── __init__.py                 # Package exports
-├── cli.py                      # CLI interface
-├── database.py                 # MongoDB integration
+├── __main__.py                 # Package entry point
 ├── channel/                    # Channel tracking module
 │   ├── __init__.py
 │   ├── resolver.py            # Handle → Channel ID
 │   ├── feed_fetcher.py        # RSS + yt-dlp fetching
 │   ├── sync.py                # Sync logic
 │   └── schemas.py             # Channel/Video schemas
+├── cli/                        # CLI interface
+│   ├── __init__.py            # Main CLI entry
+│   ├── __main__.py            # Module entry point
+│   └── commands/
+│       ├── channel.py         # Channel commands
+│       ├── cookie.py          # Cookie management
+│       ├── transcription.py   # Transcription commands
+│       └── utils.py           # Utility commands
 ├── api/
 │   ├── main.py                # FastAPI app
 │   ├── app.py                 # App factory
@@ -45,8 +54,10 @@ src/
 │   │   ├── error_handler.py   # Error handling
 │   │   └── logging.py         # Request logging
 │   ├── routers/
+│   │   ├── channels.py        # Channel endpoints
 │   │   ├── videos.py          # Transcription endpoints
 │   │   ├── transcripts.py     # Transcript retrieval
+│   │   ├── stats.py           # Statistics endpoints
 │   │   └── health.py          # Health checks
 │   └── models/
 │       ├── requests.py        # Request models
@@ -56,17 +67,25 @@ src/
 │   ├── constants.py           # Application constants
 │   ├── exceptions.py          # Custom exceptions
 │   ├── schemas.py             # Pydantic models
-│   └── logging_config.py      # Logging configuration
+│   ├── logging_config.py      # Logging configuration
+│   ├── http_session.py        # HTTP session management
+│   └── utils.py               # Utility functions
+├── services/                   # Business logic services
+│   ├── channel_service.py     # Channel operations
+│   ├── transcription_service.py # Transcription logic
+│   └── video_service.py       # Video operations
 ├── pipeline/
 │   └── transcript.py          # Main pipeline
 ├── transcription/
 │   ├── handler.py             # Transcription with fallback
-│   └── whisper_openvino.py    # OpenVINO Whisper
+│   ├── groq_provider.py       # Groq Whisper API provider
+│   ├── whisper_provider.py    # Whisper provider abstraction
+│   ├── youtube_api.py         # YouTube transcript API
+│   └── youtube_downloader.py  # yt-dlp integration
 ├── video/
 │   └── cookie_manager.py      # Browser cookie management
 ├── database/
 │   ├── manager.py             # Database manager
-│   ├── models.py              # Database models
 │   └── redis.py               # Redis integration
 └── mcp/
     ├── server.py              # MCP server

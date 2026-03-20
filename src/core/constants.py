@@ -199,7 +199,7 @@ WEEK = 7 * DAY
 SUPPORTED_LANGUAGES = ["en", "en-US", "en-GB", "es", "fr", "de", "it", "pt", "ru", "ja", "ko", "zh"]
 DEFAULT_LANGUAGE = "en"
 
-TRANSCRIPT_SOURCES = ["youtube_auto", "youtube_manual", "whisper_openvino", "whisper_local"]
+TRANSCRIPT_SOURCES = ["youtube_auto", "youtube_manual", "groq_whisper", "whisper_local"]
 
 # =============================================================================
 # Job Status Constants

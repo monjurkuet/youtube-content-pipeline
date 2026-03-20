@@ -135,7 +135,7 @@ async def get_transcript(
     - `offset`: Number of results to skip (default: 0)
 
     **Filtering:**
-    - `transcript_source`: Filter by source (youtube_auto, whisper_openvino, etc.)
+    - `transcript_source`: Filter by source (youtube_auto, groq_whisper, etc.)
     - `language`: Filter by language code (en, es, fr, etc.)
 
     Results are sorted by creation date (newest first).
@@ -183,7 +183,7 @@ async def list_transcripts(
     transcript_source: str | None = Query(
         default=None,
         description="Filter by transcript source",
-        examples=["youtube_auto", "whisper_openvino"],
+        examples=["youtube_auto", "groq_whisper"],
     ),
     language: str | None = Query(
         default=None,

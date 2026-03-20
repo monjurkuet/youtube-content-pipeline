@@ -595,7 +595,12 @@ def channel_retry_failed(
         batch_size = settings.batch_default_size
 
     def check_video_availability(video_id: str) -> tuple[bool, str, str]:
-        """Check if video is available for transcription using yt-dlp."""
+        """Check if video is available for transcription using yt-dlp.
+        
+        Note: We don't use cookies here because yt-dlp with cookies causes
+        "Requested format is not available" errors with --flat-playlist.
+        Video metadata is public and doesn't require authentication.
+        """
         try:
             cmd = [
                 "yt-dlp",
@@ -605,12 +610,7 @@ def channel_retry_failed(
                 "--quiet",
                 f"https://www.youtube.com/watch?v={video_id}",
             ]
-
-            from src.video.cookie_manager import get_cookie_manager
-            cookie_manager = get_cookie_manager(auto_extract=True)
-            cookie_manager.ensure_cookies()
-            cookie_args = cookie_manager.get_cookie_args()
-            cmd.extend(cookie_args)
+            # Note: No cookies - video metadata is public
 
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
 

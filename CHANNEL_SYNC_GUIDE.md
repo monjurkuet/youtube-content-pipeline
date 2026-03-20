@@ -330,8 +330,6 @@ sudo apt install intel-opencl-icd intel-level-zero-gpu level-zero-dev
 - Larger Whisper models (e.g., `whisper-large-v3`)
 - More concurrent transcriptions
 
-See `INTEL_ARC_GPU_GUIDE.md` for detailed setup.
-
 ---
 
 ## 📊 Transcription Status Guide

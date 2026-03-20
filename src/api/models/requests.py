@@ -32,6 +32,7 @@ class TranscriptionRequest(BaseModel):
     )
 
     model_config = {
+        "strict": True,
         "json_schema_extra": {
             "example": {
                 "source": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",

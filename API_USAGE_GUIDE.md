@@ -412,6 +412,64 @@ Sync videos from a tracked channel.
 }
 ```
 
+#### Get Channel Statistics
+
+**Endpoint**: `GET /api/v1/channels/{channel_id}/stats`
+
+Get statistics for a specific channel including transcript progress.
+
+**Path Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `channel_id` | string | YouTube channel ID |
+
+**Response** (200 OK):
+
+```json
+{
+  "channel_id": "UCX6OQ3DkcsbYNE6H8uQQuVA",
+  "channel_title": "MrBeast",
+  "total_videos": 750,
+  "transcribed_videos": 500,
+  "pending_videos": 200,
+  "failed_videos": 50,
+  "completion_percentage": 66.7,
+  "last_sync_at": "2024-01-15T10:30:00Z"
+}
+```
+
+#### Sync All Channels
+
+**Endpoint**: `POST /api/v1/channels/sync-all`
+
+Sync all tracked channels at once. Useful for batch updates.
+
+**Query Parameters**:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `mode` | string | "recent" | Sync mode: "recent" or "all" |
+
+**Response** (200 OK):
+
+```json
+{
+  "success": true,
+  "total_channels": 5,
+  "results": [
+    {
+      "channel_id": "UCX6OQ3DkcsbYNE6H8uQQuVA",
+      "channel_title": "MrBeast",
+      "videos_fetched": 15,
+      "videos_new": 3
+    }
+  ],
+  "total_videos_fetched": 75,
+  "total_videos_new": 12
+}
+```
+
 ---
 
 #### Add Channels from Video URLs

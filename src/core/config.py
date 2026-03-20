@@ -46,11 +46,12 @@ class Settings(BaseSettings):
     audio_format: str = "mp3"
     audio_bitrate: str = "128k"
 
-    # OpenVINO / Whisper Settings
-    openvino_whisper_model: str = "openai/whisper-medium"
-    openvino_device: str = "AUTO"  # AUTO, GPU, CPU
-    openvino_cache_dir: str = "~/.cache/whisper_openvino"
-    whisper_chunk_length: int = 30  # seconds
+    # Groq Whisper API Settings
+    groq_api_key: str = ""  # Loaded from GROQ_API_KEY env var
+    groq_whisper_model: str = "whisper-large-v3"  # whisper-large-v3 or whisper-large-v3-turbo
+    groq_chunk_duration: int = 600  # 10 minutes
+    groq_chunk_overlap: int = 5  # 5 seconds
+    groq_max_file_size_mb: int = 25  # Free tier limit
 
     # Pipeline Settings
     pipeline_work_dir: str = "/tmp/transcription_pipeline"
@@ -230,15 +231,17 @@ def apply_yaml_config(settings: Settings, config: dict[str, Any]) -> Settings:
         if "show_progress" in batch:
             settings.batch_show_progress = bool(batch["show_progress"])
 
-    # Whisper
-    if "whisper" in config:
-        whisper = config["whisper"]
-        if "audio_format" in whisper and settings.audio_format == "mp3":
-            settings.audio_format = whisper["audio_format"]
-        if "audio_bitrate" in whisper and settings.audio_bitrate == "128k":
-            settings.audio_bitrate = whisper["audio_bitrate"]
-        if "chunk_length" in whisper and settings.whisper_chunk_length == 30:
-            settings.whisper_chunk_length = int(whisper["chunk_length"])
+    # Groq
+    if "groq" in config:
+        groq = config["groq"]
+        if "whisper_model" in groq and settings.groq_whisper_model == "whisper-large-v3":
+            settings.groq_whisper_model = groq["whisper_model"]
+        if "chunk_duration" in groq and settings.groq_chunk_duration == 600:
+            settings.groq_chunk_duration = int(groq["chunk_duration"])
+        if "chunk_overlap" in groq and settings.groq_chunk_overlap == 5:
+            settings.groq_chunk_overlap = int(groq["chunk_overlap"])
+        if "max_file_size_mb" in groq and settings.groq_max_file_size_mb == 25:
+            settings.groq_max_file_size_mb = int(groq["max_file_size_mb"])
 
     # Pipeline
     if "pipeline" in config:

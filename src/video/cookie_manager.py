@@ -72,9 +72,9 @@ class YouTubeCookieManager:
             return False
 
         console.print(
-            "[yellow]   Cookies missing or expired, auto-extracting from Chrome...[/yellow]"
+            "[dim]   Refreshing cookies from Chrome...[/dim]"
         )
-        logger.info("Cookies missing or expired, attempting auto-extraction from Chrome...")
+        logger.debug("Cookies expired, auto-extracting from Chrome...")
 
         try:
             success = self._extract_cookies()
@@ -193,8 +193,7 @@ class YouTubeCookieManager:
                         cj_google = browser_cookie3.chrome(domain_name=".google.com", profile_dir=str(profile))
                     except TypeError:
                         # profile_dir not supported on this platform/browser_cookie3 version
-                        logger.warning(f"profile_dir parameter not supported, falling back to default Chrome extraction")
-                        console.print("[yellow]   Profile selection not supported, using default Chrome profile[/yellow]")
+                        logger.debug("Profile selection not supported, using default Chrome profile")
                         break
 
                     for cookie in cj_google:
@@ -389,8 +388,7 @@ class YouTubeCookieManager:
                 self.cookie_file.unlink()
             if self.metadata_file.exists():
                 self.metadata_file.unlink()
-            logger.info("Cookie cache invalidated")
-            console.print("[yellow]   Cookie cache invalidated[/yellow]")
+            logger.debug("Cookie cache invalidated, will refresh on next use")
         except Exception as e:
             logger.error(f"Error invalidating cache: {e}")
             console.print(f"[red]   Error invalidating cache: {e}[/red]")

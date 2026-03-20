@@ -163,6 +163,11 @@ def fetch_recent_with_ytdlp(channel_url: str, max_videos: int = 15) -> list[Vide
     to get metadata for each video. This is faster than full metadata
     fetch for a small number of videos.
 
+    Note: We don't use cookies for metadata fetching since:
+    1. yt-dlp with cookies causes "format not available" errors with --simulate
+    2. Video metadata is public and doesn't require authentication
+    3. Cookies are only needed for age-restricted content download
+
     Args:
         channel_url: YouTube channel URL
         max_videos: Maximum videos to fetch
@@ -178,8 +183,7 @@ def fetch_recent_with_ytdlp(channel_url: str, max_videos: int = 15) -> list[Vide
     skipped_private = 0
 
     try:
-        # Get cookie args
-        cookie_args = _ensure_cookies()
+        # Note: We don't use cookies for metadata fetching (see docstring above)
 
         # Step 1: Get video IDs quickly with --flat-playlist
         cmd = [
@@ -190,7 +194,6 @@ def fetch_recent_with_ytdlp(channel_url: str, max_videos: int = 15) -> list[Vide
             "--quiet",
             f"--playlist-end={max_videos}",
         ]
-        cmd.extend(cookie_args)  # Add cookies if available
         cmd.append(channel_url)
 
         result = subprocess.run(
@@ -235,7 +238,6 @@ def fetch_recent_with_ytdlp(channel_url: str, max_videos: int = 15) -> list[Vide
                     "--no-warnings",
                     "--quiet",
                 ]
-                cmd.extend(cookie_args)  # Add cookies if available
                 cmd.append(f"https://www.youtube.com/watch?v={video_id}")
 
                 result = subprocess.run(

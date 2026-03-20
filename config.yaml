@@ -11,7 +11,7 @@ rate_limiting:
   # Random delay range in seconds between video transcriptions
   # A random delay between min_delay and max_delay will be applied
   min_delay: 2.0
-  max_delay: 10.0
+  max_delay: 20.0
   
   # Delay before retrying after rate limit error (exponential backoff base)
   retry_delay: 10.0
