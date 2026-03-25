@@ -21,6 +21,7 @@ from src.api.models.requests import (
 )
 from src.api.security import validate_api_key
 from src.channel.schemas import ChannelDocument
+from src.channel.sync import sync_channel
 from src.services.channel_service import add_channels_from_videos_service
 from src.core.constants import DEFAULT_LIMIT, MAX_LIMIT
 
@@ -569,8 +570,6 @@ async def sync_all_channels(
 
     if not channels:
         return {"message": "No channels to sync", "synced": 0}
-
-    from src.channel.sync import sync_channel
 
     results = []
     for ch in channels:

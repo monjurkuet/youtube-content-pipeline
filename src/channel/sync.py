@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import random
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,7 +12,7 @@ from rich.console import Console
 from src.core.config import get_settings_with_yaml
 from src.core.schemas import SyncResult
 from src.database.manager import MongoDBManager
-from src.video.cookie_manager import get_cookie_manager, YouTubeCookieManager
+from src.video.cookie_manager import get_cookie_manager
 
 from .feed_fetcher import fetch_videos, _get_cookie_manager
 from .resolver import resolve_channel_handle
@@ -222,9 +221,6 @@ async def _fetch_new_videos_only_async(
 
     # 4. Fetch full metadata for NEW IDs
     console.print(f"[dim]Fetching metadata for {len(new_ids)} new videos...[/dim]")
-    
-    import subprocess
-    import json
     
     videos = []
     # Get cookie args

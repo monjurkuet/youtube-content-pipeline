@@ -121,14 +121,14 @@ async def add_channels_from_videos_service(
                     result_entry["sync_videos_fetched"] = sync_result.videos_fetched
                     result_entry["sync_videos_new"] = sync_result.videos_new
                 except Exception as sync_error:
-                    logger.error(f"Auto-sync failed for {channel_id}: {sync_error}")
+                    logger.error("Auto-sync failed for %s: %s", channel_id, sync_error)
                     result_entry["sync_error"] = str(sync_error)
 
             results["added"].append(result_entry)
             processed_channels.add(channel_id)
 
         except Exception as e:
-            logger.error(f"Failed to process URL {url}: {e}")
+            logger.error("Failed to process URL %s: %s", url, e)
             results["failed"].append({"url": url, "video_id": video_id, "error": str(e)})
 
     return {

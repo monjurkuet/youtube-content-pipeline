@@ -8,6 +8,7 @@ This module centralizes all application-wide constants for:
 """
 
 from datetime import datetime, timezone
+import importlib.metadata
 
 # Application start time (for uptime calculation)
 START_TIME = datetime.now(timezone.utc)
@@ -37,7 +38,10 @@ Contact the API administrator to obtain an API key.
 API requests are rate-limited to ensure fair usage. Rate limit headers
 are included in all responses.
 """
-APP_VERSION = "0.5.0"  # Updated for Phase 1 restructuring
+try:
+    APP_VERSION = importlib.metadata.version("youtube-content-pipeline")
+except importlib.metadata.PackageNotFoundError:
+    APP_VERSION = "0.5.0"  # fallback when not installed as a package
 
 # =============================================================================
 # API Configuration

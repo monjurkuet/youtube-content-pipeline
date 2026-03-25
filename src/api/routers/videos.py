@@ -18,12 +18,15 @@ from src.api.security import validate_api_key
 from src.core.constants import JobStatus, Priority
 from src.core.config import get_settings
 from src.database.manager import MongoDBManager
+from src.database.redis import get_redis_manager
 from src.services.transcription_service import (
     get_job,
     submit_transcription_job,
-    redis_manager,
     _jobs_memory,
 )
+
+# Use the same lazy accessor as transcription_service
+redis_manager = get_redis_manager()
 
 logger = logging.getLogger(__name__)
 

@@ -29,8 +29,6 @@ from prometheus_client import (
     Gauge,
     Histogram,
     generate_latest,
-    multiprocess,
-    start_http_server,
 )
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response as StarletteResponse
@@ -354,8 +352,6 @@ def record_redis_operation(
     ).observe(duration_seconds)
 
 
-# Import os at module level for metrics endpoint
-import os
 
 __all__ = [
     "setup_prometheus",

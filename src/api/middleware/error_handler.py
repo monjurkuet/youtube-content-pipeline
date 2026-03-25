@@ -239,7 +239,8 @@ class ErrorHandlerMiddleware:
             )
 
         logger.info(
-            f"HTTP {status_code} error",
+            "HTTP %s error",
+            status_code,
             extra={
                 "request_id": request_id,
                 "method": request.method,

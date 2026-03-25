@@ -151,36 +151,5 @@ class InternalServerErrorResponse(ErrorResponse):
     )
 
 
-# Error code constants for consistent usage across the codebase
-class ErrorCodes:
-    """Standardized error codes for the API."""
-
-    # Validation errors
-    VALIDATION_ERROR = "VALIDATION_ERROR"
-    INVALID_VIDEO_ID = "INVALID_VIDEO_ID"
-    INVALID_CHANNEL_ID = "INVALID_CHANNEL_ID"
-    INVALID_JOB_ID = "INVALID_JOB_ID"
-    MISSING_REQUIRED_FIELD = "MISSING_REQUIRED_FIELD"
-    INVALID_PARAMETER = "INVALID_PARAMETER"
-
-    # Not found errors
-    NOT_FOUND = "NOT_FOUND"
-    TRANSCRIPT_NOT_FOUND = "TRANSCRIPT_NOT_FOUND"
-    VIDEO_NOT_FOUND = "VIDEO_NOT_FOUND"
-    JOB_NOT_FOUND = "JOB_NOT_FOUND"
-    CHANNEL_NOT_FOUND = "CHANNEL_NOT_FOUND"
-
-    # Authentication errors
-    AUTHENTICATION_ERROR = "AUTHENTICATION_ERROR"
-    INVALID_API_KEY = "INVALID_API_KEY"
-    MISSING_API_KEY = "MISSING_API_KEY"
-    EXPIRED_API_KEY = "EXPIRED_API_KEY"
-
-    # Rate limiting
-    RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED"
-
-    # Server errors
-    INTERNAL_ERROR = "INTERNAL_ERROR"
-    DATABASE_ERROR = "DATABASE_ERROR"
-    TRANSCRIPTION_ERROR = "TRANSCRIPTION_ERROR"
-    EXTERNAL_SERVICE_ERROR = "EXTERNAL_SERVICE_ERROR"
+# Re-export the canonical ErrorCodes from core.constants for backward compatibility
+from src.core.constants import ErrorCodes as ErrorCodes  # noqa: F401

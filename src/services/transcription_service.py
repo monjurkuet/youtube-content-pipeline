@@ -22,9 +22,18 @@ from src.api.middleware import (
 
 logger = logging.getLogger(__name__)
 
-# Global instances
-redis_manager = get_redis_manager()
+# Lazy accessor — avoids Redis connection at import time in test/CLI contexts
+_redis_manager = None
 _jobs_memory: dict[str, dict[str, Any]] = {}
+
+
+def _get_redis():
+    """Get the Redis manager, initializing on first use."""
+    global _redis_manager
+    if _redis_manager is None:
+        _redis_manager = get_redis_manager()
+    return _redis_manager
+
 
 
 def generate_job_id(video_id: str) -> str:
@@ -35,8 +44,8 @@ def generate_job_id(video_id: str) -> str:
 
 async def get_job(job_id: str) -> dict[str, Any] | None:
     """Get job from Redis or memory."""
-    if redis_manager.is_available:
-        job = await redis_manager.get_job(job_id)
+    if _get_redis().is_available:
+        job = await _get_redis().get_job(job_id)
         if job:
             # Convert ISO format strings back to datetime
             for field in ["created_at", "started_at", "completed_at"]:
@@ -51,8 +60,8 @@ async def get_job(job_id: str) -> dict[str, Any] | None:
 
 async def set_job(job_id: str, job_data: dict[str, Any]) -> bool:
     """Set job in Redis or memory."""
-    if redis_manager.is_available:
-        return await redis_manager.set_job(job_id, job_data)
+    if _get_redis().is_available:
+        return await _get_redis().set_job(job_id, job_data)
     _jobs_memory[job_id] = job_data
     return True
 
@@ -74,7 +83,7 @@ async def process_video_transcription(
 ):
     """Background task to process video transcription."""
     start_time = time.perf_counter()
-    logger.info(f"Background job {job_id} started for {source}")
+    logger.info("Background job %s started for %s", job_id, source)
 
     await update_job(
         job_id,
@@ -98,12 +107,12 @@ async def process_video_transcription(
         try:
             result = get_transcript(source, save_to_db=save_to_db)
         except Exception as e:
-            logger.error(f"Transcription engine failed for {job_id}: {e}")
+            logger.error("Transcription engine failed for %s: %s", job_id, e)
             raise
 
         # Step 3: Complete
         duration = time.perf_counter() - start_time
-        logger.info(f"Background job {job_id} completed successfully in {duration:.2f}s")
+        logger.info("Background job %s completed successfully in %.2fs", job_id, duration)
 
         status_updates = {
             "status": JobStatus.COMPLETED if result.success else JobStatus.FAILED,
@@ -139,7 +148,7 @@ async def process_video_transcription(
             )
 
     except Exception as e:
-        logger.error(f"Background job {job_id} failed: {e}")
+        logger.error("Background job %s failed: %s", job_id, e)
         duration = time.perf_counter() - start_time
 
         error_updates = {
@@ -184,9 +193,9 @@ async def send_webhook(
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.post(url, json=payload)
             response.raise_for_status()
-            logger.info(f"Webhook sent successfully for job {job_id} to {url}")
+            logger.info("Webhook sent successfully for job %s to %s", job_id, url)
     except Exception as e:
-        logger.error(f"Failed to send webhook for job {job_id} to {url}: {e}")
+        logger.error("Failed to send webhook for job %s to %s: %s", job_id, url, e)
 
 
 async def submit_transcription_job(
