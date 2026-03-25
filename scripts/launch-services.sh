@@ -84,7 +84,7 @@ load_config() {
 
 check_port_in_use() {
     local port=$1
-    if lsof -i :$port > /dev/null 2>&1; then
+    if ss -ltn "sport = :$port" | tail -n +2 | grep -q .; then
         return 0  # Port is in use
     else
         return 1  # Port is free
@@ -93,7 +93,9 @@ check_port_in_use() {
 
 get_pid_on_port() {
     local port=$1
-    lsof -t -i :$port 2>/dev/null | head -1
+    ss -ltnp "sport = :$port" 2>/dev/null \
+        | awk -F'pid=' 'NF > 1 { print $2 }' \
+        | awk -F',' 'NF > 0 { print $1; exit }'
 }
 
 kill_process_on_port() {
@@ -159,15 +161,19 @@ start_api() {
     # Wait for startup
     sleep 5
     
-    # Check if running
-    if ps -p $API_PID > /dev/null 2>&1; then
+    # If a process is now listening on the target port, treat it as started.
+    if check_port_in_use "$API_PORT"; then
         log_success "API started (PID: $API_PID)"
         return 0
+    fi
+    
+    if ps -p $API_PID > /dev/null 2>&1; then
+        log_error "API process is running but not listening on port $API_PORT. Check /tmp/transcription_api.log"
     else
         log_error "API failed to start. Check /tmp/transcription_api.log"
-        tail -20 /tmp/transcription_api.log
-        return 1
     fi
+    tail -20 /tmp/transcription_api.log
+    return 1
 }
 
 start_prometheus() {

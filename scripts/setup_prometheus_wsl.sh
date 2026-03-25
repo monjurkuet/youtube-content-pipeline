@@ -24,6 +24,8 @@ GRAFANA_DIR="${INSTALL_DIR}/grafana"
 CONFIG_DIR="${INSTALL_DIR}/config"
 DATA_DIR="${INSTALL_DIR}/data"
 
+
+
 # =============================================================================
 # Helper Functions
 # =============================================================================
@@ -42,6 +44,26 @@ log_warning() {
 
 log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
+}
+
+init_monitoring_user() {
+    # Prefer an explicit service user, otherwise auto-detect a non-root desktop user.
+    MONITORING_USER="${MONITORING_USER:-${SUDO_USER:-}}"
+    if [ -z "$MONITORING_USER" ]; then
+        MONITORING_USER="$(getent passwd | awk -F: '$3 >= 1000 && $3 < 65534 && $1 != "nobody" { print $1; exit }')"
+    fi
+
+    if [ -z "$MONITORING_USER" ]; then
+        log_error "Could not determine a non-root monitoring user. Set MONITORING_USER explicitly and re-run."
+        exit 1
+    fi
+
+    if ! getent passwd "$MONITORING_USER" >/dev/null 2>&1; then
+        log_error "Monitoring user '$MONITORING_USER' does not exist. Set MONITORING_USER to a valid local user and re-run."
+        exit 1
+    fi
+
+    MONITORING_GROUP="${MONITORING_GROUP:-$(id -gn "$MONITORING_USER")}"
 }
 
 check_root() {
@@ -83,7 +105,9 @@ create_directories() {
     mkdir -p "$CONFIG_DIR"
     mkdir -p "$DATA_DIR/prometheus"
     mkdir -p "$DATA_DIR/grafana"
-    chown -R muham:muham "$INSTALL_DIR"
+    chown -R "$MONITORING_USER:$MONITORING_GROUP" "$INSTALL_DIR"
+    chown -R "$MONITORING_USER:$MONITORING_GROUP" "$CONFIG_DIR"
+    chown -R "$MONITORING_USER:$MONITORING_GROUP" "$DATA_DIR"
     log_success "Directories created"
 }
 
@@ -110,7 +134,7 @@ install_prometheus() {
     # Set permissions
     chmod +x "$PROMETHEUS_DIR/prometheus"
     chmod +x "$PROMETHEUS_DIR/promtool"
-    chown -R muham:muham "$PROMETHEUS_DIR"
+    chown -R "$MONITORING_USER:$MONITORING_GROUP" "$PROMETHEUS_DIR"
     
     # Cleanup
     rm -rf "prometheus-${PROMETHEUS_VERSION}.linux-amd64"*
@@ -201,7 +225,7 @@ scrape_configs:
     metrics_path: '/metrics'
     scrape_interval: 10s
     # Enable only if API runs on same WSL instance
-    enabled: false
+    # disabled by default via omission from scrape configs
 
   # Node Exporter for system metrics (optional)
   - job_name: 'node'
@@ -210,7 +234,7 @@ scrape_configs:
     enabled: false
 EOF
 
-    chown muham:muham "$CONFIG_DIR/prometheus.yml"
+    chown "$MONITORING_USER:$MONITORING_GROUP" "$CONFIG_DIR/prometheus.yml"
     log_success "Prometheus configured"
 }
 
@@ -333,7 +357,6 @@ groups:
           description: "API has been down for more than 1 minute"
 EOF
 
-    chown muham:muham "$CONFIG_DIR/alerts.yml"
     log_success "Alert rules created"
 }
 
@@ -994,7 +1017,9 @@ EOF
     
     chmod +x "$INSTALL_DIR/start-grafana.sh"
     
-    chown -R muham:muham "$INSTALL_DIR"
+    chown -R "$MONITORING_USER:$MONITORING_GROUP" "$INSTALL_DIR"
+    chown -R "$MONITORING_USER:$MONITORING_GROUP" "$CONFIG_DIR"
+    chown -R "$MONITORING_USER:$MONITORING_GROUP" "$DATA_DIR"
     
     log_success "Startup scripts created"
 }
@@ -1012,8 +1037,8 @@ After=network-online.target
 
 [Service]
 Type=simple
-User=muham
-Group=muham
+User=$MONITORING_USER
+Group=$MONITORING_GROUP
 ExecReload=/bin/kill -HUP \$MAINPID
 ExecStart=$INSTALL_DIR/start-prometheus.sh
 PIDFile=/run/prometheus.pid
@@ -1127,6 +1152,7 @@ main() {
     echo ""
     
     check_root
+    init_monitoring_user
     check_prerequisites
     create_directories
     install_prometheus

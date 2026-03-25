@@ -81,13 +81,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             if redis_manager.is_available:
                 logger.info("Redis connection established")
             else:
-                logger.warning(
-                    "Redis unavailable, operating in degraded mode. "
-                    "Job storage will use in-memory fallback."
+                error_msg = (
+                    "Redis unavailable. Job storage will use in-memory fallback. "
+                    "Set REDIS_STRICT_MODE=true to fail startup if Redis is required."
                 )
+                if settings.redis_strict_mode:
+                    logger.error(
+                        "Redis strict mode enabled but Redis is unavailable. "
+                        "Cannot start application."
+                    )
+                    raise RuntimeError(
+                        "Redis is required but unavailable. "
+                        "Either start Redis or set REDIS_STRICT_MODE=false."
+                    )
+                logger.warning(error_msg)
         else:
             logger.info("Redis disabled in configuration")
     except Exception as e:
+        if settings.redis_strict_mode:
+            logger.error("Redis initialization failed in strict mode: %s", e)
+            raise RuntimeError(f"Redis initialization failed: {e}") from e
         logger.warning("Redis initialization failed (degraded mode): %s", e)
 
     try:
@@ -137,11 +150,11 @@ def create_openapi_schema(
         },
         "servers": [
             {
-                "url": "/api/v1",
+                "url": "/",
                 "description": "API v1 - Current stable version",
             },
             {
-                "url": "http://localhost:8000/api/v1",
+                "url": "http://localhost:8000",
                 "description": "Local development server",
             },
         ],

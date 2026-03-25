@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     redis_db: int = 0
     redis_key_prefix: str = "transcription"
     redis_enabled: bool = True
+    redis_strict_mode: bool = True  # If True, fail startup if Redis unavailable
 
     # Authentication
     auth_api_keys: list[str] = []  # Loaded from env var API_KEYS (comma-separated)
