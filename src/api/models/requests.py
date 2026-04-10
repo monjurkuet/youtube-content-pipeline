@@ -1,9 +1,17 @@
 """Pydantic models for API requests and responses."""
 
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class ChannelSyncMode(str, Enum):
+    """Supported channel sync modes."""
+
+    RECENT = "recent"
+    ALL = "all"
 
 # =============================================================================
 # Request Models
@@ -62,10 +70,28 @@ class AddChannelsFromVideosRequest(BaseModel):
         default=True,
         description="Whether to sync channel videos after adding",
     )
-    sync_mode: Literal["recent", "all"] = Field(
-        default="recent",
+    sync_mode: ChannelSyncMode = Field(
+        default=ChannelSyncMode.RECENT,
         description="Sync mode: 'recent' for ~15 videos, 'all' for all videos",
     )
+    sync_max_videos_per_channel: int | None = Field(
+        default=None,
+        ge=1,
+        description="Maximum videos to sync per channel when sync_mode='all'",
+    )
+
+    @model_validator(mode="after")
+    def validate_sync_limits(self) -> "AddChannelsFromVideosRequest":
+        """Require explicit bounds for expensive full-channel sync requests."""
+        if (
+            self.auto_sync
+            and self.sync_mode == ChannelSyncMode.ALL
+            and self.sync_max_videos_per_channel is None
+        ):
+            raise ValueError(
+                "sync_max_videos_per_channel is required when auto_sync=true and sync_mode='all'"
+            )
+        return self
 
     model_config = {
         "json_schema_extra": {
@@ -76,6 +102,7 @@ class AddChannelsFromVideosRequest(BaseModel):
                 ],
                 "auto_sync": True,
                 "sync_mode": "recent",
+                "sync_max_videos_per_channel": None,
             }
         }
     }
@@ -143,6 +170,36 @@ class JobStatusResponse(BaseModel):
     )
 
 
+class TranscriptSummaryResponse(BaseModel):
+    """Summary response model for transcript list endpoints."""
+
+    document_id: str | None = Field(
+        default=None,
+        validation_alias="_id",
+        serialization_alias="_id",
+        description="MongoDB document identifier",
+    )
+    video_id: str = Field(..., description="YouTube video identifier")
+    title: str | None = Field(default=None, description="Video title")
+    channel_id: str | None = Field(default=None, description="YouTube channel identifier")
+    channel_name: str | None = Field(default=None, description="Channel name")
+    duration_seconds: float | None = Field(default=None, description="Video duration in seconds")
+    language: str | None = Field(default=None, description="Transcript language")
+    transcript_source: str | None = Field(default=None, description="Transcript provider/source")
+    segment_count: int | None = Field(default=None, description="Number of transcript segments")
+    total_text_length: int | None = Field(
+        default=None,
+        description="Total transcript text length in characters",
+    )
+    source_type: str | None = Field(default=None, description="Original source type")
+    source_url: str | None = Field(default=None, description="Original source URL")
+    analyzed_at: datetime | None = Field(default=None, description="Analysis timestamp")
+    created_at: datetime | None = Field(default=None, description="Creation timestamp")
+    updated_at: datetime | None = Field(default=None, description="Last update timestamp")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class ChannelAddedEntry(BaseModel):
     """Response model for a single added channel."""
 
@@ -151,6 +208,10 @@ class ChannelAddedEntry(BaseModel):
     channel_handle: str = Field(..., description="Normalized channel handle")
     channel_title: str = Field(..., description="Channel title/name")
     database_id: str = Field(..., description="MongoDB document ID")
+    resolution_source: str | None = Field(
+        default=None,
+        description="Strategy that resolved the channel information",
+    )
     sync_videos_fetched: int | None = Field(
         default=None,
         description="Number of videos fetched during sync",
@@ -182,6 +243,18 @@ class ChannelFailedEntry(BaseModel):
         description="Video ID if extracted",
     )
     error: str = Field(..., description="Error message")
+    error_stage: str | None = Field(
+        default=None,
+        description="Pipeline stage where the failure occurred",
+    )
+    resolution_source: str | None = Field(
+        default=None,
+        description="Strategy that was being used when the failure occurred",
+    )
+    retryable: bool = Field(
+        default=False,
+        description="Whether this failure is likely to succeed on retry",
+    )
 
 
 class AddChannelsFromVideosResponse(BaseModel):

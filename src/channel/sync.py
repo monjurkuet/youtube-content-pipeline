@@ -29,22 +29,60 @@ from src.services.video_service import (
 console = Console()
 logger = logging.getLogger(__name__)
 
-# Persistent event loop for sync_all operations
-_sync_loop: asyncio.AbstractEventLoop | None = None
-
-
-def _get_event_loop() -> asyncio.AbstractEventLoop:
-    """Get or create a persistent event loop for sync operations."""
-    global _sync_loop
-    if _sync_loop is None or _sync_loop.is_closed():
-        _sync_loop = asyncio.new_event_loop()
-    return _sync_loop
-
-
 def _run_async(coro):
-    """Run an async coroutine using the persistent event loop."""
-    loop = _get_event_loop()
-    return loop.run_until_complete(coro)
+    """Run an async coroutine from synchronous code.
+
+    Args:
+        coro: Coroutine to execute.
+
+    Returns:
+        The coroutine result.
+    """
+    try:
+        running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        running_loop = None
+
+    if running_loop is None:
+        return asyncio.run(coro)
+
+    # If we are already inside an event loop, execute the coroutine in a worker
+    # thread so sync callers remain safe under FastAPI and other async runtimes.
+    import concurrent.futures
+
+    def _run_in_thread() -> Any:
+        return asyncio.run(coro)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_run_in_thread)
+        return future.result()
+
+
+async def sync_channel_async(
+    handle: str | None = None,
+    mode: str = "recent",
+    db_manager: MongoDBManager | None = None,
+    max_videos: int | None = None,
+    incremental: bool = False,
+    channel_id: str | None = None,
+    channel_url: str | None = None,
+) -> SyncResult:
+    """Async wrapper for sync_channel.
+
+    This preserves the synchronous implementation for CLI usage while making
+    the channel sync workflow safe to call from FastAPI and other async
+    contexts.
+    """
+    return await asyncio.to_thread(
+        sync_channel,
+        handle,
+        mode,
+        db_manager,
+        max_videos,
+        incremental,
+        channel_id,
+        channel_url,
+    )
 
 
 def sync_channel(
@@ -114,7 +152,10 @@ def sync_channel(
 
     # 3. Save to database
     async def _save():
-        async with (db_manager or MongoDBManager()) as db:
+        # Always create a fresh MongoDBManager to avoid event loop issues
+        # when called from async context
+        from src.database.manager import MongoDBManager
+        async with MongoDBManager() as db:
             # Save channel info
             channel_doc = ChannelDocument(
                 channel_id=channel_id,

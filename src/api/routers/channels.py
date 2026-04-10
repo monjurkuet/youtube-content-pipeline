@@ -13,15 +13,14 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from src.api.dependencies import get_db, get_db_manager_dep
-from src.database.manager import MongoDBManager
-from src.api.models.errors import ErrorCodes
 from src.api.models.requests import (
     AddChannelsFromVideosRequest,
     AddChannelsFromVideosResponse,
+    ChannelSyncMode,
 )
+from src.database.manager import MongoDBManager
 from src.api.security import validate_api_key
-from src.channel.schemas import ChannelDocument
-from src.channel.sync import sync_channel
+from src.channel.sync import sync_channel_async
 from src.services.channel_service import add_channels_from_videos_service
 from src.core.constants import DEFAULT_LIMIT, MAX_LIMIT
 
@@ -83,15 +82,27 @@ async def list_channels(
     Returns:
         List of channel documents
     """
-    cursor = db.channels.find({}).sort("tracked_since", -1).limit(limit)
+    channels = await db.channels.find({}).sort("tracked_since", -1).limit(limit).to_list(length=limit)
+    if not channels:
+        return []
+
+    channel_ids = [doc["channel_id"] for doc in channels if doc.get("channel_id")]
+    video_counts: dict[str, int] = {}
+
+    if channel_ids:
+        pipeline = [
+            {"$match": {"channel_id": {"$in": channel_ids}}},
+            {"$group": {"_id": "$channel_id", "count": {"$sum": 1}}},
+        ]
+        async for entry in db.video_metadata.aggregate(pipeline):
+            if entry.get("_id"):
+                video_counts[entry["_id"]] = entry["count"]
 
     results = []
-    async for doc in cursor:
+    for doc in channels:
         if "_id" in doc:
             doc["_id"] = str(doc["_id"])
-        # Get video count for this channel
-        video_count = await db.video_metadata.count_documents({"channel_id": doc.get("channel_id")})
-        doc["video_count"] = video_count
+        doc["video_count"] = video_counts.get(doc.get("channel_id"), 0)
         results.append(doc)
 
     return results
@@ -352,10 +363,15 @@ async def sync_channel_endpoint(
         description="YouTube channel ID",
         examples=["UCX6OQ3DkcsbYNE6H8uQQuVA"],
     ),
-    mode: str = Query(
-        default="recent",
+    mode: ChannelSyncMode = Query(
+        default=ChannelSyncMode.RECENT,
         description="Sync mode: 'recent' or 'all'",
         examples=["recent", "all"],
+    ),
+    max_videos: int | None = Query(
+        default=None,
+        ge=1,
+        description="Maximum videos to fetch when mode='all'",
     ),
     db: AsyncIOMotorDatabase = Depends(get_db),
     db_manager: MongoDBManager = Depends(get_db_manager_dep),
@@ -375,6 +391,12 @@ async def sync_channel_endpoint(
     Raises:
         HTTPException: If channel not found (404)
     """
+    if mode == ChannelSyncMode.ALL and max_videos is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="max_videos is required when mode='all'",
+        )
+
     # Check if channel exists
     channel = await db.channels.find_one({"channel_id": channel_id})
     if channel is None:
@@ -383,23 +405,26 @@ async def sync_channel_endpoint(
             detail=f"Channel {channel_id} not found",
         )
 
+    # Get channel handle
+    handle = channel.get("channel_handle", "")
+    if not handle:
+        url = channel.get("channel_url", "")
+        if "@" in url:
+            handle = url.split("@")[-1].split("/")[0]
+
+    if not handle:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Could not determine channel handle for sync",
+        )
+
     try:
-        # Get channel handle
-        handle = channel.get("channel_handle", "")
-        if not handle:
-            # Extract handle from URL
-            url = channel.get("channel_url", "")
-            if "@" in url:
-                handle = url.split("@")[-1].split("/")[0]
-
-        if not handle:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Could not determine channel handle for sync",
-            )
-
-        # Perform sync
-        result = sync_channel(handle=handle, mode=mode, db_manager=db_manager)
+        result = await sync_channel_async(
+            handle=handle,
+            mode=mode.value,
+            db_manager=db_manager,
+            max_videos=max_videos,
+        )
 
         return {
             "success": True,
@@ -412,7 +437,8 @@ async def sync_channel_endpoint(
             "videos_existing": result.videos_existing,
             "message": f"Synced {result.videos_fetched} videos ({result.videos_new} new)",
         }
-
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -487,11 +513,11 @@ async def add_channels_from_videos_endpoint(
                     ],
                     "auto_sync": True,
                     "sync_mode": "recent",
+                    "sync_max_videos_per_channel": None,
                 },
             }
         },
     ),
-    db: AsyncIOMotorDatabase = Depends(get_db),
     db_manager: MongoDBManager = Depends(get_db_manager_dep),
     auth_ctx=Depends(validate_api_key),
 ) -> AddChannelsFromVideosResponse:
@@ -501,6 +527,7 @@ async def add_channels_from_videos_endpoint(
         db_manager=db_manager,
         auto_sync=request.auto_sync,
         sync_mode=request.sync_mode,
+        sync_max_videos_per_channel=request.sync_max_videos_per_channel,
     )
 
     return AddChannelsFromVideosResponse(**results)
@@ -559,14 +586,39 @@ async def get_channel_stats(
     operation_id="sync_all_channels",
 )
 async def sync_all_channels(
-    mode: str = Query(default="recent", description="Sync mode: 'recent' or 'all'"),
+    mode: ChannelSyncMode = Query(
+        default=ChannelSyncMode.RECENT,
+        description="Sync mode: 'recent' or 'all'",
+    ),
+    max_channels: int | None = Query(
+        default=None,
+        ge=1,
+        description="Maximum tracked channels to process",
+    ),
+    max_videos_per_channel: int | None = Query(
+        default=None,
+        ge=1,
+        description="Maximum videos to fetch per channel when mode='all'",
+    ),
     db: AsyncIOMotorDatabase = Depends(get_db),
     db_manager: MongoDBManager = Depends(get_db_manager_dep),
     auth_ctx=Depends(validate_api_key),
 ) -> dict[str, Any]:
     """Sync all tracked channels."""
+    if mode == ChannelSyncMode.ALL:
+        if max_channels is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="max_channels is required when mode='all'",
+            )
+        if max_videos_per_channel is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="max_videos_per_channel is required when mode='all'",
+            )
+
     cursor = db.channels.find({})
-    channels = await cursor.to_list(length=1000)
+    channels = await cursor.to_list(length=max_channels or 1000)
 
     if not channels:
         return {"message": "No channels to sync", "synced": 0}
@@ -577,7 +629,12 @@ async def sync_all_channels(
         if not handle:
             continue
         try:
-            res = sync_channel(handle=f"@{handle}", mode=mode, db_manager=db_manager)
+            res = await sync_channel_async(
+                handle=f"@{handle}",
+                mode=mode.value,
+                db_manager=db_manager,
+                max_videos=max_videos_per_channel,
+            )
             results.append({
                 "channel_id": res.channel_id,
                 "handle": handle,

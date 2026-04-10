@@ -345,6 +345,37 @@ class TestOpenAPIErrorResponses:
                             f"Operation {method.upper()} missing 422 response"
                         )
 
+    def test_openapi_http_validation_error_refs_resolve(self, client: TestClient) -> None:
+        """Test OpenAPI keeps generated validation schemas required by route refs.
+
+        Given: Custom OpenAPI schema built from generated FastAPI routes
+        When: Operations reference HTTPValidationError
+        Then: The component exists so Swagger/OpenAPI resolvers do not break
+        """
+
+        response = client.get("/openapi.json")
+        schema = response.json()
+
+        refs_http_validation_error = []
+
+        def _walk(node: object) -> None:
+            if isinstance(node, dict):
+                ref = node.get("$ref")
+                if ref == "#/components/schemas/HTTPValidationError":
+                    refs_http_validation_error.append(ref)
+                for value in node.values():
+                    _walk(value)
+            elif isinstance(node, list):
+                for value in node:
+                    _walk(value)
+
+        _walk(schema)
+
+        if not refs_http_validation_error:
+            pytest.skip("schema has no HTTPValidationError refs")
+
+        assert "HTTPValidationError" in schema.get("components", {}).get("schemas", {})
+
     def test_openapi_has_404_response(self, client: TestClient) -> None:
         """Test 404 not found documented.
 

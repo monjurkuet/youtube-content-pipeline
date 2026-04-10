@@ -17,6 +17,8 @@ from fastapi.testclient import TestClient
 
 from src.api.security import generate_api_key
 
+PROTECTED_ENDPOINT = "/api/v1/videos/jobs"
+
 
 class TestAuthenticationFlows:
     """Test authentication flow scenarios."""
@@ -71,8 +73,7 @@ class TestAPIKeyAuthentication:
         """
         headers = {"X-API-Key": valid_api_key}
 
-        # Health endpoint should work with valid key
-        response = client_with_auth.get("/health", headers=headers)
+        response = client_with_auth.get(PROTECTED_ENDPOINT, headers=headers)
 
         assert response.status_code == status.HTTP_200_OK
 
@@ -89,7 +90,7 @@ class TestAPIKeyAuthentication:
         """
         headers = {"X-API-Key": invalid_api_key}
 
-        response = client_with_auth.get("/health", headers=headers)
+        response = client_with_auth.get(PROTECTED_ENDPOINT, headers=headers)
 
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
@@ -103,7 +104,7 @@ class TestAPIKeyAuthentication:
         When: Request without API key
         Then: Returns 401 Unauthorized
         """
-        response = client_with_auth.get("/health")
+        response = client_with_auth.get(PROTECTED_ENDPOINT)
 
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
@@ -143,7 +144,7 @@ class TestAPIKeyHeaderFormats:
         """
         headers = {"X-API-Key": valid_api_key}
 
-        response = client_with_auth.get("/health", headers=headers)
+        response = client_with_auth.get(PROTECTED_ENDPOINT, headers=headers)
 
         assert response.status_code == status.HTTP_200_OK
 
@@ -160,7 +161,7 @@ class TestAPIKeyHeaderFormats:
         """
         headers = {"Authorization": f"Bearer {valid_api_key}"}
 
-        response = client_with_auth.get("/health", headers=headers)
+        response = client_with_auth.get(PROTECTED_ENDPOINT, headers=headers)
 
         # May work if Bearer auth is configured, or return 401
         assert response.status_code in [
@@ -184,7 +185,7 @@ class TestAPIKeyHeaderFormats:
             "Authorization": f"Bearer {valid_api_key}",
         }
 
-        response = client_with_auth.get("/health", headers=headers)
+        response = client_with_auth.get(PROTECTED_ENDPOINT, headers=headers)
 
         assert response.status_code == status.HTTP_200_OK
 
@@ -200,7 +201,7 @@ class TestAPIKeyHeaderFormats:
         """
         headers = {"X-API-Key": ""}
 
-        response = client_with_auth.get("/health", headers=headers)
+        response = client_with_auth.get(PROTECTED_ENDPOINT, headers=headers)
 
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
@@ -216,7 +217,7 @@ class TestAPIKeyHeaderFormats:
         """
         headers = {"X-API-Key": "   "}
 
-        response = client_with_auth.get("/health", headers=headers)
+        response = client_with_auth.get(PROTECTED_ENDPOINT, headers=headers)
 
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
@@ -289,7 +290,7 @@ class TestAPIKeyEdgeCases:
         long_key = "x" * 1000
         headers = {"X-API-Key": long_key}
 
-        response = client_with_auth.get("/health", headers=headers)
+        response = client_with_auth.get(PROTECTED_ENDPOINT, headers=headers)
 
         # Should not crash, should return 401 for invalid key
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
@@ -307,7 +308,7 @@ class TestAPIKeyEdgeCases:
         special_key = "key_with_special_chars!@#$%^&*()"
         headers = {"X-API-Key": special_key}
 
-        response = client_with_auth.get("/health", headers=headers)
+        response = client_with_auth.get(PROTECTED_ENDPOINT, headers=headers)
 
         # Should not crash
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
@@ -326,7 +327,7 @@ class TestAPIKeyEdgeCases:
         unicode_key = "key__with_unicode_🔑_emoji"
         headers = {"X-API-Key": unicode_key}
 
-        response = client_with_auth.get("/health", headers=headers)
+        response = client_with_auth.get(PROTECTED_ENDPOINT, headers=headers)
 
         # Should not crash
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
@@ -346,7 +347,7 @@ class TestAPIKeyEdgeCases:
         wrong_case_key = valid_api_key.upper()
         headers = {"X-API-Key": wrong_case_key}
 
-        response = client_with_auth.get("/health", headers=headers)
+        response = client_with_auth.get(PROTECTED_ENDPOINT, headers=headers)
 
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
@@ -369,7 +370,7 @@ class TestMultipleAPIKeys:
 
         for key in valid_keys:
             headers = {"X-API-Key": key}
-            response = client_with_auth.get("/health", headers=headers)
+            response = client_with_auth.get(PROTECTED_ENDPOINT, headers=headers)
 
             assert response.status_code == status.HTTP_200_OK
 
@@ -385,7 +386,7 @@ class TestMultipleAPIKeys:
         """
         headers = {"X-API-Key": "completely_invalid_key"}
 
-        response = client_with_auth.get("/health", headers=headers)
+        response = client_with_auth.get(PROTECTED_ENDPOINT, headers=headers)
 
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
@@ -484,7 +485,7 @@ class TestAuthenticationErrorMessages:
         """
         headers = {"X-API-Key": "invalid_key"}
 
-        response = client_with_auth.get("/health", headers=headers)
+        response = client_with_auth.get(PROTECTED_ENDPOINT, headers=headers)
 
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
         data = response.json()
@@ -500,7 +501,7 @@ class TestAuthenticationErrorMessages:
         When: Request to protected endpoint
         Then: Response includes WWW-Authenticate header
         """
-        response = client_with_auth.get("/health")
+        response = client_with_auth.get(PROTECTED_ENDPOINT)
 
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
         # Check for WWW-Authenticate header

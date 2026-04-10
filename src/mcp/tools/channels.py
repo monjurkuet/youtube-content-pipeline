@@ -13,7 +13,11 @@ from typing import Any
 
 from src.channel.resolver import resolve_channel_handle
 from src.channel.schemas import ChannelDocument, VideoMetadataDocument
-from src.channel.sync import get_pending_videos, mark_video_transcribed, sync_channel as core_sync_channel
+from src.channel.sync import (
+    get_pending_videos,
+    mark_video_transcribed,
+    sync_channel_async as core_sync_channel_async,
+)
 from src.services.channel_service import add_channels_from_videos_service
 from src.core.schemas import TranscriptDocument
 from src.database.manager import MongoDBManager
@@ -108,8 +112,8 @@ async def sync_channel(handle: str, mode: str = "recent") -> dict[str, Any]:
         # Normalize handle
         normalized_handle = handle.lstrip("@")
 
-        # Perform sync
-        result = core_sync_channel(
+        # Perform sync in a worker thread to keep the MCP event loop responsive
+        result = await core_sync_channel_async(
             handle=handle,
             mode=mode,
             db_manager=None,  # Use default

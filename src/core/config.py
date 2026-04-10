@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +21,9 @@ class Settings(BaseSettings):
     # MongoDB
     mongodb_url: str = "mongodb://localhost:27017"
     mongodb_database: str = "video_pipeline"
+    mongodb_server_selection_timeout_ms: int = 5000
+    mongodb_connect_timeout_ms: int = 5000
+    mongodb_socket_timeout_ms: int = 10000
 
     # Redis
     redis_url: str = "redis://localhost:6379"
@@ -30,6 +34,8 @@ class Settings(BaseSettings):
 
     # Authentication
     auth_api_keys: list[str] = []  # Loaded from env var API_KEYS (comma-separated)
+    auth_api_keys_raw: str = Field(default="", validation_alias="API_KEYS")
+    auth_single_api_key: str = Field(default="", validation_alias="API_KEY")
     auth_default_rate_limit_tier: str = "free"
     auth_require_key: bool = False  # Set True to require auth for all endpoints
 
@@ -53,6 +59,13 @@ class Settings(BaseSettings):
     groq_chunk_duration: int = 600  # 10 minutes
     groq_chunk_overlap: int = 5  # 5 seconds
     groq_max_file_size_mb: int = 25  # Free tier limit
+
+    # Transcript backend settings
+    transcription_backend: str = "groq"
+    transcript_service_base_url: str = "http://localhost:8346"
+    transcript_service_api_key: str = ""
+    transcript_service_poll_interval_sec: float = 2.0
+    transcript_service_timeout_sec: int = 300
 
     # Pipeline Settings
     pipeline_work_dir: str = "/tmp/transcription_pipeline"
@@ -114,6 +127,12 @@ class Settings(BaseSettings):
         """
         if self.auth_api_keys:
             return self.auth_api_keys
+
+        if self.auth_api_keys_raw:
+            return [k.strip() for k in self.auth_api_keys_raw.split(",") if k.strip()]
+
+        if self.auth_single_api_key:
+            return [self.auth_single_api_key]
 
         # Try to load from environment
         import os

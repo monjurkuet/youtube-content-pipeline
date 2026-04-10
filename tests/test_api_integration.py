@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import status
 from fastapi.testclient import TestClient
 
+from src.api.dependencies import get_db, get_db_manager_dep
 from src.api.models.requests import JobStatusResponse, TranscriptionJobResponse
 from src.core.constants import JobStatus
 
@@ -393,6 +394,128 @@ class TestTranscriptionWithMocks:
                 status.HTTP_200_OK,
                 status.HTTP_404_NOT_FOUND,
             ]
+
+
+class TestChannelSyncEndpoints:
+    """Test channel sync endpoints."""
+
+    def test_sync_channel_endpoint_uses_async_worker(
+        self,
+        client: TestClient,
+        mock_db_manager: AsyncMock,
+    ) -> None:
+        """Test POST /api/v1/channels/{channel_id}/sync returns success when sync is mocked."""
+        mock_db = MagicMock()
+        mock_db.channels = MagicMock()
+        mock_db.channels.find_one = AsyncMock(
+            return_value={
+                "channel_id": "UC1234567890123456789012",
+                "channel_handle": "TestChannel",
+                "channel_url": "https://www.youtube.com/@TestChannel",
+            }
+        )
+        with patch("src.api.routers.channels.get_db", return_value=mock_db), patch(
+            "src.api.routers.channels.sync_channel_async", new_callable=AsyncMock
+        ) as mock_sync:
+            mock_sync.return_value = MagicMock(
+                channel_id="UC1234567890123456789012",
+                channel_handle="@TestChannel",
+                channel_title="Test Channel",
+                sync_mode="recent",
+                videos_fetched=15,
+                videos_new=3,
+                videos_existing=12,
+            )
+
+            response = client.post("/api/v1/channels/UC1234567890123456789012/sync")
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["success"] is True
+        assert data["videos_fetched"] == 15
+        assert mock_sync.await_count == 1
+
+    def test_sync_all_channels_endpoint_uses_async_worker(
+        self,
+        client: TestClient,
+        mock_db_manager: AsyncMock,
+    ) -> None:
+        """Test POST /api/v1/channels/sync-all returns success when sync is mocked."""
+        mock_db = MagicMock()
+        mock_db.channels = MagicMock()
+        mock_channels_cursor = AsyncMock()
+        mock_channels_cursor.to_list = AsyncMock(
+            return_value=[
+                {
+                    "channel_id": "UC1234567890123456789012",
+                    "channel_handle": "TestChannel",
+                }
+            ]
+        )
+        mock_db.channels.find = MagicMock(return_value=mock_channels_cursor)
+
+        with patch("src.api.routers.channels.get_db", return_value=mock_db), patch(
+            "src.api.routers.channels.sync_channel_async", new_callable=AsyncMock
+        ) as mock_sync:
+            mock_sync.return_value = MagicMock(
+                channel_id="UC1234567890123456789012",
+                channel_handle="@TestChannel",
+                channel_title="Test Channel",
+                sync_mode="recent",
+                videos_fetched=15,
+                videos_new=3,
+                videos_existing=12,
+            )
+
+            response = client.post("/api/v1/channels/sync-all")
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["total_channels"] == 1
+        assert data["results"][0]["success"] is True
+        assert mock_sync.await_count == 1
+
+    def test_add_channels_from_videos_uses_async_auto_sync(
+        self,
+        client: TestClient,
+        mock_db_manager: AsyncMock,
+    ) -> None:
+        """Test POST /api/v1/channels/from-videos succeeds with a mocked service response."""
+        expected = {
+            "success": True,
+            "added": [
+                {
+                    "url": "https://www.youtube.com/watch?v=video123",
+                    "channel_id": "UC1234567890123456789012",
+                    "channel_handle": "TestChannel",
+                    "channel_title": "Test Channel",
+                    "database_id": "507f1f77bcf86cd799439011",
+                    "resolution_source": "watch_page",
+                    "sync_videos_fetched": 15,
+                    "sync_videos_new": 3,
+                }
+            ],
+            "skipped_duplicate": [],
+            "skipped_existing": [],
+            "failed": [],
+            "total_processed": 1,
+            "total_added": 1,
+            "total_skipped": 0,
+            "total_failed": 0,
+        }
+
+        with patch("src.api.routers.channels.add_channels_from_videos_service", return_value=expected):
+            response = client.post(
+                "/api/v1/channels/from-videos",
+                json={"video_urls": ["https://www.youtube.com/watch?v=video123"], "auto_sync": True},
+            )
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["success"] is True
+        assert data["total_added"] == 1
+        assert data["added"][0]["sync_videos_fetched"] == 15
+        assert data["added"][0]["resolution_source"] == "watch_page"
 
 
 class TestAPIInfo:

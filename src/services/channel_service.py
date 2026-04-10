@@ -3,9 +3,9 @@
 import logging
 from typing import Any, Literal
 
-from src.channel.resolver import get_channel_from_video, resolve_channel_handle
+from src.channel.resolver import resolve_channel_from_video, resolve_channel_handle
 from src.channel.schemas import ChannelDocument
-from src.channel.sync import sync_channel
+from src.channel.sync import sync_channel_async
 from src.core.utils import extract_video_id
 from src.database.manager import MongoDBManager
 
@@ -17,6 +17,7 @@ async def add_channels_from_videos_service(
     db_manager: MongoDBManager,
     auto_sync: bool = True,
     sync_mode: Literal["recent", "all"] = "recent",
+    sync_max_videos_per_channel: int | None = None,
 ) -> dict[str, Any]:
     """
     Add YouTube channels from a list of video URLs.
@@ -26,6 +27,8 @@ async def add_channels_from_videos_service(
         db_manager: MongoDB manager instance
         auto_sync: Whether to automatically sync videos after adding a channel
         sync_mode: Mode for syncing videos ("recent" or "all")
+        sync_max_videos_per_channel: Maximum videos to fetch per channel when
+            running full channel syncs.
 
     Returns:
         Dictionary with results for each URL and summary stats
@@ -44,15 +47,22 @@ async def add_channels_from_videos_service(
             results["failed"].append({"url": url, "video_id": None, "error": "Invalid YouTube URL"})
             continue
 
-        channel_info = get_channel_from_video(video_id)
-        if not channel_info:
+        resolution = resolve_channel_from_video(video_id)
+        if not resolution.success or not resolution.channel_id:
             results["failed"].append(
-                {"url": url, "video_id": video_id, "error": "Could not fetch channel info"}
+                {
+                    "url": url,
+                    "video_id": video_id,
+                    "error": resolution.error_message or "Could not fetch channel info",
+                    "error_stage": resolution.error_stage or resolution.source or "resolver",
+                    "retryable": resolution.retryable,
+                    "resolution_source": resolution.source,
+                }
             )
             continue
 
-        channel_id = channel_info["channel_id"]
-        channel_handle = channel_info["channel_handle"]
+        channel_id = resolution.channel_id
+        channel_handle = resolution.channel_handle or resolution.channel_title or ""
 
         # Check if already processed in this batch
         if channel_id in processed_channels:
@@ -107,16 +117,18 @@ async def add_channels_from_videos_service(
                 "channel_handle": normalized_handle,
                 "channel_title": channel_doc.channel_title,
                 "database_id": str(doc_id),
+                "resolution_source": resolution.source,
             }
 
             # Auto-sync if requested
             if auto_sync:
                 try:
-                    sync_result = sync_channel(
+                    sync_result = await sync_channel_async(
                         channel_id=channel_id,
                         channel_url=channel_url,
                         mode=sync_mode,
                         db_manager=db_manager,
+                        max_videos=sync_max_videos_per_channel,
                     )
                     result_entry["sync_videos_fetched"] = sync_result.videos_fetched
                     result_entry["sync_videos_new"] = sync_result.videos_new

@@ -12,9 +12,13 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from src.api.dependencies import get_db
-from src.api.models.errors import ErrorCodes
+from src.api.models.requests import TranscriptSummaryResponse
 from src.api.security import validate_api_key
-from src.core.constants import DEFAULT_LIMIT, MAX_LIMIT
+from src.core.constants import (
+    DEFAULT_OFFSET,
+    TRANSCRIPT_LIST_DEFAULT_LIMIT,
+    TRANSCRIPT_LIST_MAX_LIMIT,
+)
 
 router = APIRouter(prefix="/transcripts", tags=["transcripts"])
 
@@ -96,6 +100,7 @@ async def get_transcript(
         pattern=r"^[a-zA-Z0-9_-]{11}$",
     ),
     db: AsyncIOMotorDatabase = Depends(get_db),
+    auth_ctx=Depends(validate_api_key),
 ) -> dict[str, Any]:
     """Get transcript for a video.
 
@@ -125,13 +130,13 @@ async def get_transcript(
 
 @router.get(
     "/",
-    response_model=list[dict[str, Any]],
+    response_model=list[TranscriptSummaryResponse],
     summary="List transcripts",
     description="""
     List all transcripts with pagination support.
 
     **Pagination:**
-    - `limit`: Maximum number of results (default: 100, max: 1000)
+    - `limit`: Maximum number of results (default: 20, max: 200)
     - `offset`: Number of results to skip (default: 0)
 
     **Filtering:**
@@ -154,6 +159,7 @@ async def get_transcript(
                             "channel_name": "Example Channel",
                             "language": "en",
                             "transcript_source": "youtube_auto",
+                            "segment_count": 42,
                             "created_at": "2024-01-15T10:30:00Z",
                         }
                     ]
@@ -170,13 +176,13 @@ async def get_transcript(
 )
 async def list_transcripts(
     limit: int = Query(
-        default=DEFAULT_LIMIT,
+        default=TRANSCRIPT_LIST_DEFAULT_LIMIT,
         ge=1,
-        le=MAX_LIMIT,
+        le=TRANSCRIPT_LIST_MAX_LIMIT,
         description="Maximum number of results to return",
     ),
     offset: int = Query(
-        default=0,
+        default=DEFAULT_OFFSET,
         ge=0,
         description="Number of results to skip",
     ),
@@ -191,11 +197,12 @@ async def list_transcripts(
         examples=["en", "es", "fr"],
     ),
     db: AsyncIOMotorDatabase = Depends(get_db),
-) -> list[dict[str, Any]]:
+    auth_ctx=Depends(validate_api_key),
+) -> list[TranscriptSummaryResponse]:
     """List all transcripts with optional filtering.
 
     Args:
-        limit: Maximum results to return (1-1000)
+        limit: Maximum results to return (1-200)
         offset: Number of results to skip
         transcript_source: Optional filter by source
         language: Optional filter by language code
@@ -213,7 +220,12 @@ async def list_transcripts(
     if language:
         query["language"] = language
 
-    cursor = db.transcripts.find(query).sort("created_at", -1).skip(offset).limit(limit)
+    cursor = (
+        db.transcripts.find(query, {"segments": 0, "full_text": 0})
+        .sort("created_at", -1)
+        .skip(offset)
+        .limit(limit)
+    )
 
     results = []
     async for doc in cursor:

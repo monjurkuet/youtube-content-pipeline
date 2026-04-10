@@ -119,12 +119,15 @@ async def list_jobs(
 ) -> list[JobStatusResponse]:
     """List transcription jobs."""
     jobs = []
-    if redis_manager.is_available:
-        # This part might need a more efficient implementation in redis_manager
-        # but for now we'll just return an empty list or implement basic listing if available
-        pass
-    else:
-        # Memory fallback
+    # Always call list_jobs - it handles auto-connect internally
+    try:
+        jobs = await redis_manager.list_jobs(
+            limit=limit,
+            offset=offset,
+            status_filter=status_filter,
+        )
+    except Exception:
+        # Fallback to memory if Redis fails
         all_jobs = list(_jobs_memory.values())
         if status_filter:
             all_jobs = [j for j in all_jobs if j.get("status") == status_filter]

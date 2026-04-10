@@ -105,7 +105,7 @@ async def process_video_transcription(
         # This is a CPU-bound task, but get_transcript handles its own internal threading/locking
         # for OpenVINO/Whisper.
         try:
-            result = get_transcript(source, save_to_db=save_to_db)
+            result = await asyncio.to_thread(get_transcript, source, save_to_db=save_to_db)
         except Exception as e:
             logger.error("Transcription engine failed for %s: %s", job_id, e)
             raise

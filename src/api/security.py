@@ -26,8 +26,8 @@ from src.core.config import get_settings
 logger = logging.getLogger(__name__)
 
 # Security schemes
-API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
-BEARER_TOKEN = HTTPBearer(auto_error=False, scheme_name="Bearer")
+API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False, scheme_name="ApiKeyAuth")
+BEARER_TOKEN = HTTPBearer(auto_error=False, scheme_name="BearerAuth")
 
 
 class SecuritySchemes:

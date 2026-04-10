@@ -55,7 +55,7 @@ start_api() {
     cd "$PROJECT_DIR"
     
     # Start in background and capture output to log
-    nohup uv run uvicorn src.api.main:app --host 0.0.0.0 --port $API_PORT > /tmp/transcription_api.log 2>&1 &
+    nohup uv run uvicorn src.api.app:app --host 0.0.0.0 --port $API_PORT > /tmp/transcription_api.log 2>&1 &
     PID=$!
     
     # Wait for startup (up to 15 seconds)

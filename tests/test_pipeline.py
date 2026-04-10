@@ -1,6 +1,7 @@
 """Tests for the transcription pipeline."""
 
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -89,3 +90,38 @@ class TestIdentifySourceType:
 
         with pytest.raises(ValueError, match="Could not identify source type"):
             identify_source_type("not-a-valid-source")
+
+
+class TestTranscriptPipelinePersistence:
+    """Test transcript persistence side effects."""
+
+    def test_save_to_database_marks_youtube_video_completed(self):
+        """Saving a YouTube transcript should also update video metadata status."""
+        from src.core.schemas import TranscriptDocument
+        from src.pipeline.transcript import TranscriptPipeline
+
+        raw = RawTranscript(
+            video_id="dQw4w9WgXcQ",
+            segments=[TranscriptSegment(text="hello", start=0.0, duration=1.0)],
+            source="youtube_api",
+            language="en",
+        )
+        doc = TranscriptDocument.from_raw_transcript(raw, source_type="youtube")
+
+        mock_db = AsyncMock()
+        mock_db.save_transcript.return_value = "transcript-123"
+        mock_db.mark_transcript_completed.return_value = True
+
+        mock_manager = AsyncMock()
+        mock_manager.__aenter__.return_value = mock_db
+        mock_manager.__aexit__.return_value = None
+
+        with patch("src.database.MongoDBManager", return_value=mock_manager):
+            pipeline = TranscriptPipeline()
+            doc_id = pipeline._save_to_database(doc)
+
+        assert doc_id == "transcript-123"
+        mock_db.save_transcript.assert_awaited_once()
+        mock_db.mark_transcript_completed.assert_awaited_once_with(
+            "dQw4w9WgXcQ", "transcript-123"
+        )

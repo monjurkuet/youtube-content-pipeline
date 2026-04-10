@@ -150,6 +150,8 @@ class TranscriptPipeline:
             # Use context manager for proper lifecycle management
             async with MongoDBManager() as db:
                 doc_id = await db.save_transcript(transcript_doc)
+                if transcript_doc.source_type == "youtube":
+                    await db.mark_transcript_completed(transcript_doc.video_id, doc_id)
                 return doc_id
 
         def _run_in_thread() -> str:

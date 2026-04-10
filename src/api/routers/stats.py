@@ -6,6 +6,7 @@ This module provides endpoints for:
 - Content counts
 """
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
@@ -18,6 +19,32 @@ from src.api.security import validate_api_key
 from src.database.redis import get_redis_manager
 
 router = APIRouter(prefix="/stats", tags=["stats"])
+
+
+async def _get_transcripts_by_source(db: AsyncIOMotorDatabase) -> dict[str, int]:
+    """Aggregate transcript counts by source."""
+    counts: dict[str, int] = {}
+    async for doc in db.transcripts.aggregate(
+        [{"$group": {"_id": "$transcript_source", "count": {"$sum": 1}}}]
+    ):
+        source = doc["_id"] or "unknown"
+        counts[source] = doc["count"]
+    return counts
+
+
+async def _get_active_job_stats() -> tuple[int, bool]:
+    """Return active transcription jobs and Redis availability."""
+    redis_manager = get_redis_manager()
+    if not redis_manager.is_available:
+        return 0, False
+
+    try:
+        jobs = await redis_manager.list_jobs(limit=1000)
+    except Exception:
+        return 0, False
+
+    active_jobs = sum(1 for job in jobs if job.get("status") in ("queued", "processing"))
+    return active_jobs, True
 
 
 class StatsResponse(BaseModel):
@@ -103,48 +130,26 @@ async def get_stats(
     Returns:
         StatsResponse with comprehensive metrics
     """
-    # Get counts
-    total_channels = await db.channels.count_documents({})
-    total_videos = await db.video_metadata.count_documents({})
-    total_transcripts = await db.transcripts.count_documents({})
-
-    # Video status breakdown
-    videos_pending = await db.video_metadata.count_documents(
-        {"transcript_status": "pending"}
+    (
+        total_channels,
+        total_videos,
+        total_transcripts,
+        videos_pending,
+        videos_completed,
+        videos_failed,
+        transcripts_by_source,
+        job_stats,
+    ) = await asyncio.gather(
+        db.channels.count_documents({}),
+        db.video_metadata.count_documents({}),
+        db.transcripts.count_documents({}),
+        db.video_metadata.count_documents({"transcript_status": "pending"}),
+        db.video_metadata.count_documents({"transcript_status": "completed"}),
+        db.video_metadata.count_documents({"transcript_status": "failed"}),
+        _get_transcripts_by_source(db),
+        _get_active_job_stats(),
     )
-    videos_completed = await db.video_metadata.count_documents(
-        {"transcript_status": "completed"}
-    )
-    videos_failed = await db.video_metadata.count_documents(
-        {"transcript_status": "failed"}
-    )
-
-    # Transcripts by source
-    transcripts_by_source: dict[str, int] = {}
-    async for doc in db.transcripts.aggregate(
-        [
-            {"$group": {"_id": "$transcript_source", "count": {"$sum": 1}}},
-        ]
-    ):
-        source = doc["_id"] or "unknown"
-        transcripts_by_source[source] = doc["count"]
-
-    # Active jobs
-    redis_manager = get_redis_manager()
-    active_jobs = 0
-    redis_available = redis_manager.is_available
-
-    if redis_available:
-        try:
-            # Count active jobs from Redis
-            jobs = await redis_manager.list_jobs(limit=1000)
-            active_jobs = sum(
-                1
-                for j in jobs
-                if j.get("status") in ("queued", "processing")
-            )
-        except Exception:
-            redis_available = False
+    active_jobs, redis_available = job_stats
 
     return StatsResponse(
         total_channels=total_channels,

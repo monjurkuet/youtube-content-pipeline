@@ -83,14 +83,11 @@ def _display_details(result: ProcessingResult):
     details_table.add_column("Metric", style="dim")
     details_table.add_column("Value", style="dim")
 
-    if result.metadata:
-        details_table.add_row("Title", result.metadata.title[:50] + "...")
-        details_table.add_row("Channel", result.metadata.channel_title or "Unknown")
-
     if result.error:
         details_table.add_row("Error", f"[red]{result.error}[/red]")
 
-    rprint(details_table)
+    if details_table.row_count:
+        rprint(details_table)
 
 
 @transcription_app.command("batch")

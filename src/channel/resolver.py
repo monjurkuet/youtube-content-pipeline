@@ -1,262 +1,81 @@
-import json
+"""High-level channel resolver orchestration."""
+
+from __future__ import annotations
+
+import logging
 import re
-import subprocess
-from typing import Any
+from collections.abc import Callable
 
-from rich.console import Console
+from .models import StrategyResult, VideoChannelResolution
+from .strategies import (
+    resolve_channel_handle,
+    resolve_video_channel_via_innertube,
+    resolve_video_channel_via_watch_page,
+    resolve_video_channel_via_ytdlp,
+)
 
-from src.core.http_session import get
-from src.video.cookie_manager import get_cookie_manager
+logger = logging.getLogger(__name__)
 
-console = Console()
-
-
-def resolve_channel_handle(handle: str) -> tuple[str, str]:
-    """
-    Resolve YouTube channel handle to channel ID and URL.
-
-    Args:
-        handle: Channel handle (e.g., "@ChartChampions"), channel ID (e.g., "UCKBURc62w9crMI1BhzHRnvw"),
-                or full URL (e.g., "https://www.youtube.com/@ChartChampions")
-
-    Returns:
-        Tuple of (channel_id, channel_url)
-
-    Raises:
-        ValueError: If channel cannot be resolved
-    """
-    # Extract handle from URL if full URL provided
-    if handle.startswith("http"):
-        match = re.search(r"@([a-zA-Z0-9_-]+)", handle)
-        if match:
-            handle = "@" + match.group(1)
-        else:
-            # Try to extract channel ID from URL
-            match = re.search(r"/channel/([a-zA-Z0-9_-]+)", handle)
-            if match:
-                channel_id = match.group(1)
-                channel_url = f"https://www.youtube.com/channel/{channel_id}"
-                return channel_id, channel_url
-            raise ValueError(f"Could not extract handle from URL: {handle}")
-
-    # Check if it's already a channel ID (starts with "UC" and is 24 chars)
-    # YouTube channel IDs start with "UC" and are exactly 24 characters
-    if handle.startswith("UC") and len(handle) == 24:
-        channel_id = handle
-        channel_url = f"https://www.youtube.com/channel/{channel_id}"
-        console.print(f"[green]✓ Using channel ID directly: {channel_id}[/green]")
-        return channel_id, channel_url
-
-    # Remove @ prefix if present to check raw handle
-    raw_handle = handle.lstrip("@")
-
-    # Check if raw handle looks like a channel ID
-    if raw_handle.startswith("UC") and len(raw_handle) == 24:
-        channel_id = raw_handle
-        channel_url = f"https://www.youtube.com/channel/{channel_id}"
-        console.print(f"[green]✓ Using channel ID directly: {channel_id}[/green]")
-        return channel_id, channel_url
-
-    # Ensure handle starts with @
-    if not handle.startswith("@"):
-        handle = "@" + handle
-
-    console.print(f"[dim]Resolving channel handle: {handle}...[/dim]")
-
-    # Try the @handle format first
-    channel_id = _try_ytdlp(handle)
-    if channel_id:
-        channel_url = f"https://www.youtube.com/channel/{channel_id}"
-        console.print(f"[green]✓ Resolved to channel ID: {channel_id}[/green]")
-        return channel_id, channel_url
-
-    # Fallback: Try as custom URL (some channels use custom URLs that look like handles)
-    # e.g., @Mickmumpitz might be a custom URL, not a handle
-    custom_url = f"https://www.youtube.com/{handle}/videos"
-    channel_id = _extract_channel_id_from_page(custom_url)
-    if channel_id:
-        channel_url = f"https://www.youtube.com/channel/{channel_id}"
-        console.print(f"[green]✓ Resolved custom URL to channel ID: {channel_id}[/green]")
-        return channel_id, channel_url
-
-    raise ValueError(
-        f"Could not resolve channel handle: {handle}\n"
-        "Please verify the handle is correct and the channel is public."
-    )
+__all__ = ["resolve_channel_handle", "resolve_channel_from_video"]
 
 
-def _try_rss_feed(handle: str) -> str | None:
-    """Try to get channel ID from RSS feed."""
-    # First, we need to get the channel ID by trying common patterns
-    # RSS feed requires channel_id, so we'll try yt-dlp first to get it
-    return None  # RSS needs channel_id, can't use handle directly
-
-
-def _try_ytdlp(handle: str) -> str | None:
-    """Use yt-dlp to resolve channel handle to channel ID."""
-    channel_url = f"https://www.youtube.com/{handle}/videos"
-
-    # Ensure cookies are available
-    cookie_manager = get_cookie_manager(auto_extract=True)
-    cookie_manager.ensure_cookies()
-    cookie_args = cookie_manager.get_cookie_args()
-
-    try:
-        # Use yt-dlp to get channel info
-        cmd = [
-            "yt-dlp",
-            "--flat-playlist",
-            "--playlist-end",
-            "1",  # Just get first video to extract channel info
-            "--dump-json",
-            "--no-warnings",
-            "--quiet",
-        ]
-        cmd.extend(cookie_args)  # Add cookies if available
-        cmd.append(channel_url)
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=30,
+def resolve_channel_from_video(video_id: str) -> VideoChannelResolution:
+    """Resolve a YouTube video ID to channel metadata using multiple strategies."""
+    if not video_id or not re.fullmatch(r"[a-zA-Z0-9_-]{11}", video_id):
+        return VideoChannelResolution(
+            success=False,
+            source="validation",
+            error_stage="video_id_validation",
+            error_message=f"Invalid YouTube video ID: {video_id!r}",
+            retryable=False,
         )
 
-        if result.returncode == 0 and result.stdout.strip():
-            # Parse JSON output
-            try:
-                data = json.loads(result.stdout.strip())
-                # Try multiple fields for channel ID
-                channel_id = (
-                    data.get("channel_id") or data.get("playlist_channel_id") or data.get("channel")
-                )
-                if channel_id:
-                    return channel_id
-            except json.JSONDecodeError:
-                pass
+    strategies: list[tuple[str, Callable[[str], StrategyResult]]] = [
+        ("yt-dlp", resolve_video_channel_via_ytdlp),
+        ("watch_page", resolve_video_channel_via_watch_page),
+        ("innertube", resolve_video_channel_via_innertube),
+    ]
 
-        # Fallback: try to extract from stderr or use different approach
-        # Try fetching the channel page and extracting channel ID
-        return _extract_channel_id_from_page(channel_url)
-
-    except subprocess.TimeoutExpired:
-        console.print("[yellow]yt-dlp timeout, trying alternative method...[/yellow]")
-        return _extract_channel_id_from_page(channel_url)
-    except Exception as e:
-        console.print(f"[yellow]yt-dlp failed: {e}, trying alternative...[/yellow]")
-        return _extract_channel_id_from_page(channel_url)
-
-
-def _extract_channel_id_from_page(channel_url: str) -> str | None:
-    """Extract channel ID from YouTube channel page."""
-    try:
-        # Try RSS feed with common channel ID patterns
-        # First, get the actual channel URL by following redirects
-        response = get(channel_url, timeout=10, allow_redirects=True)
-
-        # Look for channel ID in the response
-        # Pattern 1: channel_id in URL redirects
-        if "channel/" in response.url:
-            match = re.search(r"/channel/([a-zA-Z0-9_-]{24})", response.url)
-            if match:
-                return match.group(1)
-
-        # Pattern 2: externalId in page content
-        match = re.search(r'"externalId"\s*:\s*"([a-zA-Z0-9_-]+)"', response.text)
-        if match:
-            return match.group(1)
-
-        # Pattern 3: channel_id in meta tags
-        match = re.search(r'"channelId"\s*:\s*"([a-zA-Z0-9_-]+)"', response.text)
-        if match:
-            return match.group(1)
-
-        # Pattern 4: Try to find in YouTube's JSON data
-        match = re.search(r"ytInitialData[^{]*({.+?});", response.text)
-        if match:
-            try:
-                data = json.loads(match.group(1))
-                # Navigate to find channel ID
-                if "header" in data:
-                    header = data["header"]
-                    if "c4TabbedHeaderRenderer" in header:
-                        channel_id = header["c4TabbedHeaderRenderer"].get("channelId")
-                        if channel_id:
-                            return channel_id
-            except (json.JSONDecodeError, KeyError):
-                pass
-
-        return None
-
-    except Exception as e:
-        console.print(f"[yellow]Page extraction failed: {e}[/yellow]")
-        return None
-
-
-def get_channel_id_from_rss(channel_id: str) -> str | None:
-    """
-    Verify channel ID by fetching RSS feed.
-
-    Args:
-        channel_id: YouTube channel ID
-
-    Returns:
-        Verified channel ID or None if invalid
-    """
-    rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-
-    try:
-        response = get(rss_url, timeout=10)
-        if response.status_code == 200:
-            # Parse XML to verify and get canonical channel ID
-            import xml.etree.ElementTree as ET
-
-            root = ET.fromstring(response.content)
-
-            # YouTube uses Atom namespace
-            ns = {"yt": "http://www.youtube.com/xml/schemas/2015"}
-            channel_elem = root.find("yt:channelId", ns)
-            if channel_elem is not None:
-                return channel_elem.text
-
-            # Fallback to the ID we used
-            return channel_id
-        return None
-    except Exception:
-        return None
-
-
-def get_channel_from_video(video_id: str) -> dict[str, str] | None:
-    """Get channel info from video ID using yt-dlp."""
-    try:
-        # Ensure cookies are available
-        cookie_manager = get_cookie_manager(auto_extract=True)
-        cookie_manager.ensure_cookies()
-        cookie_args = cookie_manager.get_cookie_args()
-
-        cmd = [
-            "yt-dlp",
-            "--dump-json",
-            "--no-warnings",
-            "--quiet",
-        ]
-        cmd.extend(cookie_args)  # Add cookies if available
-        cmd.append(f"https://www.youtube.com/watch?v={video_id}")
-
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-
-        if result.returncode == 0 and result.stdout.strip():
-            data = json.loads(result.stdout.strip())
-            channel_id = data.get("channel_id")
-            channel_handle = data.get("channel", "") or data.get("uploader", "")
-
-            if channel_id:
-                return {
-                    "channel_id": channel_id,
-                    "channel_handle": channel_handle,
+    failures: list[dict[str, object]] = []
+    for source_name, strategy in strategies:
+        try:
+            result = strategy(video_id)
+        except Exception as exc:  # pragma: no cover - defensive guard around external calls
+            failures.append(
+                {
+                    "source": source_name,
+                    "error_stage": source_name,
+                    "error_message": str(exc),
+                    "retryable": True,
                 }
+            )
+            logger.warning("Video resolution strategy %s failed: %s", source_name, exc)
+            continue
 
-        return None
-    except Exception as e:
-        console.print(f"[yellow]get_channel_from_video failed: {e}[/yellow]")
-        return None
+        if result.success and result.channel_id:
+            return VideoChannelResolution(
+                success=True,
+                channel_id=result.channel_id,
+                channel_handle=result.channel_handle,
+                channel_title=result.channel_title,
+                source=result.source or source_name,
+                metadata=result.metadata,
+            )
+
+        failures.append(
+            {
+                "source": source_name,
+                "error_stage": result.source or source_name,
+                "error_message": result.error_message or "Unknown resolution failure",
+                "retryable": result.retryable,
+            }
+        )
+
+    return VideoChannelResolution(
+        success=False,
+        source="structured_failure",
+        error_stage="all_strategies_failed",
+        error_message="Could not resolve channel info from video using yt-dlp, watch page, or Innertube",
+        retryable=any(item.get("retryable", False) for item in failures),
+        metadata={"failures": failures},
+    )

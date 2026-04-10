@@ -30,8 +30,9 @@ Production-grade API for YouTube video transcription and transcript management.
 
 ## Authentication
 
-Most endpoints require an API key passed via the `X-API-Key` header.
-Contact the API administrator to obtain an API key.
+API key authentication is supported via the `X-API-Key` header.
+In the current optional-auth deployment, requests without a key are allowed,
+but invalid keys are rejected. Set `AUTH_REQUIRE_KEY=true` to require a key.
 
 ## Rate Limiting
 
@@ -52,6 +53,8 @@ API_V1_PREFIX = "/api/v1"
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 1000
 DEFAULT_OFFSET = 0
+TRANSCRIPT_LIST_DEFAULT_LIMIT = 20
+TRANSCRIPT_LIST_MAX_LIMIT = 200
 
 # =============================================================================
 # OpenAPI Configuration
@@ -203,7 +206,13 @@ WEEK = 7 * DAY
 SUPPORTED_LANGUAGES = ["en", "en-US", "en-GB", "es", "fr", "de", "it", "pt", "ru", "ja", "ko", "zh"]
 DEFAULT_LANGUAGE = "en"
 
-TRANSCRIPT_SOURCES = ["youtube_auto", "youtube_manual", "groq_whisper", "whisper_local"]
+TRANSCRIPT_SOURCES = [
+    "youtube_auto",
+    "youtube_manual",
+    "groq_whisper",
+    "whisper_local",
+    "local_service",
+]
 
 # =============================================================================
 # Job Status Constants

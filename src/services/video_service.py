@@ -3,8 +3,8 @@
 import logging
 from datetime import datetime, timezone
 
-from src.database.manager import MongoDBManager
 from src.channel.schemas import VideoMetadataDocument
+from src.database.manager import MongoDBManager
 
 logger = logging.getLogger(__name__)
 
@@ -21,13 +21,8 @@ async def get_pending_videos(
     Returns:
         List of VideoMetadataDocument instances with non-completed status.
     """
-    async with (db_manager or MongoDBManager()) as db:
-        query: dict = {"transcript_status": {"$ne": "completed"}}
-        if channel_id:
-            query["channel_id"] = channel_id
-
-        cursor = db.video_metadata.find(query)
-        docs = await cursor.to_list(length=None)
+    async with db_manager or MongoDBManager() as db:
+        docs = await db.get_pending_transcription_videos(channel_id=channel_id, limit=1000)
         return [VideoMetadataDocument(**doc) for doc in docs]
 
 
@@ -43,7 +38,7 @@ async def get_failed_videos(
     Returns:
         List of VideoMetadataDocument instances with failed status.
     """
-    async with (db_manager or MongoDBManager()) as db:
+    async with db_manager or MongoDBManager() as db:
         query: dict = {"transcript_status": "failed"}
         if channel_id:
             query["channel_id"] = channel_id
@@ -65,7 +60,7 @@ async def reset_failed_transcription(
     Returns:
         True if the document was updated, False otherwise.
     """
-    async with (db_manager or MongoDBManager()) as db:
+    async with db_manager or MongoDBManager() as db:
         result = await db.video_metadata.update_one(
             {"video_id": video_id},
             {
@@ -92,5 +87,5 @@ async def mark_video_transcribed(
     Returns:
         True if the document was updated, False otherwise.
     """
-    async with (db_manager or MongoDBManager()) as db:
+    async with db_manager or MongoDBManager() as db:
         return await db.mark_transcript_completed(video_id, transcript_id)

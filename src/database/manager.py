@@ -51,7 +51,12 @@ class MongoDBManager:
         if self._initialized:
             return
 
-        self.client = AsyncIOMotorClient(self.settings.mongodb_url)
+        self.client = AsyncIOMotorClient(
+            self.settings.mongodb_url,
+            serverSelectionTimeoutMS=self.settings.mongodb_server_selection_timeout_ms,
+            connectTimeoutMS=self.settings.mongodb_connect_timeout_ms,
+            socketTimeoutMS=self.settings.mongodb_socket_timeout_ms,
+        )
         self.db = self.client[self.settings.mongodb_database]
         self.transcripts = self.db.transcripts
         self.channels = self.db.channels
@@ -432,10 +437,14 @@ class MongoDBManager:
                 "$set": {
                     "transcript_status": "completed",
                     "transcript_id": transcript_id,
-                }
+                },
+                "$unset": {
+                    "transcript_error": "",
+                    "transcript_error_category": "",
+                },
             },
         )
-        return result.modified_count > 0
+        return result.matched_count > 0
 
     async def mark_transcript_failed(
         self,

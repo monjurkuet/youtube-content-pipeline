@@ -25,7 +25,13 @@ from src.api.middleware import (
     setup_prometheus,
     setup_rate_limiter,
 )
-from src.api.routers import channels_router, health_router, stats_router, transcripts_router, videos_router
+from src.api.routers import (
+    channels_router,
+    health_router,
+    stats_router,
+    transcripts_router,
+    videos_router,
+)
 from src.core.config import get_settings
 from src.core.constants import (
     API_TAGS,
@@ -139,6 +145,10 @@ def create_openapi_schema(
     Returns:
         OpenAPI schema dictionary
     """
+    generated_schema = (
+        original_openapi() if app_instance is not None and original_openapi is not None else {}
+    )
+
     schema = {
         "openapi": "3.1.0",
         "info": {
@@ -166,7 +176,10 @@ def create_openapi_schema(
                     "type": "apiKey",
                     "in": "header",
                     "name": "X-API-Key",
-                    "description": "API key for authentication. Required for protected endpoints.",
+                    "description": (
+                        "Optional API key for authentication. "
+                        "Set AUTH_REQUIRE_KEY=true to require it on protected endpoints."
+                    ),
                 },
                 "BearerAuth": {
                     "type": "http",
@@ -259,13 +272,19 @@ def create_openapi_schema(
                 },
             },
         },
-        "security": [{"ApiKeyAuth": []}],
     }
 
-    # Add paths from app instance if provided
-    if app_instance is not None and original_openapi is not None:
-        # Get the auto-generated paths from FastAPI's original openapi method
-        schema["paths"] = original_openapi().get("paths", {})
+    if generated_schema:
+        schema["paths"] = generated_schema.get("paths", {})
+        generated_components = generated_schema.get("components", {})
+        custom_components = schema["components"]
+        merged_components = {**generated_components, **custom_components}
+        for key in ("schemas", "responses", "securitySchemes"):
+            merged_components[key] = {
+                **generated_components.get(key, {}),
+                **custom_components.get(key, {}),
+            }
+        schema["components"] = merged_components
 
     return schema
 
@@ -289,13 +308,15 @@ def create_app(force_reload: bool = False) -> FastAPI:
         Configured FastAPI application
     """
     settings = get_settings(force_reload=force_reload)
-    
+
     # Reset Redis manager if needed (to avoid loop conflicts in tests)
     from src.database.redis import get_redis_manager
+
     get_redis_manager(force_reload=force_reload)
 
     # Reset API key validator if needed
     from src.api.security import get_api_key_validator
+
     get_api_key_validator(force_reload=force_reload)
 
     app = FastAPI(
@@ -333,36 +354,12 @@ def create_app(force_reload: bool = False) -> FastAPI:
     # Add Prometheus metrics
     setup_prometheus(app)
 
-    # Include routers
-    from src.api.security import validate_api_key
-    from fastapi import Depends
-
-    app.include_router(
-        videos_router, 
-        prefix="/api/v1",
-        dependencies=[Depends(validate_api_key)]
-    )
-    app.include_router(
-        transcripts_router, 
-        prefix="/api/v1",
-        dependencies=[Depends(validate_api_key)]
-    )
-    app.include_router(
-        channels_router, 
-        prefix="/api/v1",
-        dependencies=[Depends(validate_api_key)]
-    )
-    app.include_router(
-        stats_router, 
-        prefix="/api/v1",
-        dependencies=[Depends(validate_api_key)]
-    )
-    # Health endpoints are usually public, but tests expect them to be protected 
-    # if AUTH_REQUIRE_KEY is true. validate_api_key handles this check internally.
-    app.include_router(
-        health_router,
-        dependencies=[Depends(validate_api_key)]
-    )
+    # Include routers. Optional API key validation is applied at the route level.
+    app.include_router(videos_router, prefix="/api/v1")
+    app.include_router(transcripts_router, prefix="/api/v1")
+    app.include_router(channels_router, prefix="/api/v1")
+    app.include_router(stats_router, prefix="/api/v1")
+    app.include_router(health_router)
 
     logger.info("Application created successfully")
     return app

@@ -24,7 +24,7 @@ class RawTranscript(BaseModel):
 
     video_id: str
     segments: list[TranscriptSegment]
-    source: Literal["youtube_api", "whisper", "groq_whisper"]
+    source: Literal["youtube_api", "whisper", "groq_whisper", "local_service"]
     language: str = "en"
 
     @property
@@ -47,7 +47,7 @@ class TranscriptDocument(BaseModel):
     title: str | None = None
 
     # Transcript metadata
-    transcript_source: Literal["youtube_api", "whisper", "groq_whisper"]
+    transcript_source: Literal["youtube_api", "whisper", "groq_whisper", "local_service"]
     language: str = "en"
     segment_count: int
     duration_seconds: float
@@ -106,7 +106,7 @@ class ProcessingResult(BaseModel):
     source_url: str | None = None
 
     # Transcript info
-    transcript_source: Literal["youtube_api", "whisper", "groq_whisper"]
+    transcript_source: Literal["youtube_api", "whisper", "groq_whisper", "local_service"]
     segment_count: int
     duration_seconds: float
     total_text_length: int

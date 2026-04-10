@@ -1,7 +1,7 @@
 """Channel tracking module for YouTube channels."""
 
 from .feed_fetcher import fetch_all_with_ytdlp, fetch_latest_from_rss, fetch_videos
-from .resolver import resolve_channel_handle
+from .resolver import resolve_channel_handle, resolve_channel_from_video
 from .schemas import ChannelDocument, SyncResult, VideoMetadata, VideoMetadataDocument
 from .sync import get_failed_videos, get_pending_videos, mark_video_transcribed, reset_failed_transcription, sync_channel
 
