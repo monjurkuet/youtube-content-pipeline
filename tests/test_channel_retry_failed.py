@@ -2,11 +2,13 @@
 
 import asyncio
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from src.channel.sync import get_failed_videos, reset_failed_transcription
 from src.database.manager import MongoDBManager
+from typer.testing import CliRunner
 
 
 class TestRetryFailedTranscriptions:
@@ -114,3 +116,35 @@ class TestChannelModuleExports:
         sig = inspect.signature(reset_failed_transcription)
         params = list(sig.parameters.keys())
         assert 'video_id' in params
+
+
+class TestRetryFailedCli:
+    """Regression tests for the retry-failed CLI command."""
+
+    def test_retry_failed_awaits_failed_video_lookup(self):
+        """The CLI should await the async failed-video lookup before using the result."""
+        from src.cli import app
+
+        runner = CliRunner()
+
+        with (
+            patch(
+                "src.cli.commands.channel.resolve_channel_handle",
+                return_value=("test_channel_id", "https://youtube.com/channel/test"),
+            ),
+            patch(
+                "src.core.config.get_settings_with_yaml",
+                return_value=SimpleNamespace(
+                    batch_default_size=5,
+                    rate_limiting_enabled=False,
+                ),
+            ),
+            patch("src.channel.sync.get_failed_videos", new_callable=AsyncMock) as mock_get,
+        ):
+            mock_get.return_value = []
+
+            result = runner.invoke(app, ["channel", "retry-failed", "@ECKrown"])
+
+        assert result.exit_code == 0, result.stdout
+        assert "No failed transcriptions to retry" in result.stdout
+        mock_get.assert_awaited_once_with("test_channel_id")

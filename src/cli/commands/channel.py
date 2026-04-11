@@ -699,7 +699,7 @@ def channel_retry_failed(
         rprint(f"\n[bold blue]Retrying failed transcriptions from {channel_handle}[/bold blue]\n")
 
         # Get failed videos
-        failed = get_failed_videos(channel_id)
+        failed = asyncio.run(get_failed_videos(channel_id))
 
         if not failed:
             rprint("[green]✓ No failed transcriptions to retry![/green]\n")
