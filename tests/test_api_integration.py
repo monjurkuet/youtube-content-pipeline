@@ -11,6 +11,7 @@ This module tests all API endpoints:
 import os
 import pytest
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import status
@@ -219,6 +220,78 @@ class TestVideoTranscriptionEndpoints:
         data = response.json()
         assert isinstance(data, list)
 
+    def test_failed_job_status_includes_structured_failure_fields(self, client: TestClient) -> None:
+        """Failed jobs should expose the canonical and compatibility failure fields."""
+        import src.services.transcription_service as transcription_service
+
+        original_redis_manager = transcription_service._redis_manager
+        original_jobs = dict(transcription_service._jobs_memory)
+        transcription_service._redis_manager = SimpleNamespace(is_available=False)
+        transcription_service._jobs_memory.clear()
+        transcription_service._jobs_memory["job_failed_structured"] = {
+            "job_id": "job_failed_structured",
+            "video_id": "dQw4w9WgXcQ",
+            "status": "failed",
+            "progress_percent": 100.0,
+            "current_step": "Failed",
+            "error": "Legacy download failure",
+            "error_category": "temporary_block",
+            "retryable": True,
+            "failed_stage": "download",
+        }
+
+        try:
+            response = client.get("/api/v1/videos/jobs/job_failed_structured")
+        finally:
+            transcription_service._jobs_memory.clear()
+            transcription_service._jobs_memory.update(original_jobs)
+            transcription_service._redis_manager = original_redis_manager
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["error_message"] == "Legacy download failure"
+        assert data["error"] == "Legacy download failure"
+        assert data["error_category"] == "temporary_block"
+        assert data["retryable"] is True
+        assert data["failed_stage"] == "download"
+
+    def test_failed_job_list_includes_structured_failure_fields(self, client: TestClient) -> None:
+        """Job listings should expose normalized structured failure fields."""
+        import src.services.transcription_service as transcription_service
+
+        original_redis_manager = transcription_service._redis_manager
+        original_jobs = dict(transcription_service._jobs_memory)
+        transcription_service._redis_manager = SimpleNamespace(is_available=False)
+        transcription_service._jobs_memory.clear()
+        transcription_service._jobs_memory["job_failed_list"] = {
+            "job_id": "job_failed_list",
+            "video_id": "dQw4w9WgXcQ",
+            "status": "failed",
+            "progress_percent": 100.0,
+            "current_step": "Failed",
+            "error": "Legacy timeout",
+            "error_category": "timeout",
+            "retryable": True,
+            "failed_stage": "download",
+        }
+
+        try:
+            response = client.get("/api/v1/videos/jobs?status_filter=failed")
+        finally:
+            transcription_service._jobs_memory.clear()
+            transcription_service._jobs_memory.update(original_jobs)
+            transcription_service._redis_manager = original_redis_manager
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert isinstance(data, list)
+        assert len(data) == 1
+        assert data[0]["error_message"] == "Legacy timeout"
+        assert data[0]["error"] == "Legacy timeout"
+        assert data[0]["error_category"] == "timeout"
+        assert data[0]["retryable"] is True
+        assert data[0]["failed_stage"] == "download"
+
 
 class TestTranscriptEndpoints:
     """Test transcript management endpoints."""
@@ -363,7 +436,7 @@ class TestTranscriptionWithMocks:
         assert "job_id" in data
 
         # Verify mock was called
-        assert mock_transcription_pipeline.called
+        assert mock_transcription_pipeline.acquire_transcript.called
 
     @pytest.mark.asyncio
     async def test_job_lifecycle_with_mocked_redis(
@@ -378,7 +451,7 @@ class TestTranscriptionWithMocks:
         Then: Job is stored and retrieved correctly
         """
         # Mock Redis to be available
-        with patch("src.api.routers.videos.redis_manager", mock_redis_manager):
+        with patch("src.services.transcription_service._redis_manager", mock_redis_manager):
             # Create job
             request = {"source": "https://www.youtube.com/watch?v=test123"}
             create_response = client.post("/api/v1/videos/transcribe", json=request)

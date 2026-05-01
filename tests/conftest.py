@@ -361,16 +361,27 @@ def mock_transcription_pipeline() -> MagicMock:
     """Mock the transcription pipeline.
 
     Returns:
-        Mocked pipeline function
+        Mocked pipeline instance
     """
-    mock_result = MagicMock()
-    mock_result.video_id = "mock_video_123"
-    mock_result.transcript_source = "youtube_auto"
-    mock_result.segment_count = 10
-    mock_result.duration_seconds = 120.5
+    from src.core.schemas import RawTranscript, TranscriptSegment
 
-    with patch("src.services.transcription_service.get_transcript", return_value=mock_result) as mock:
-        yield mock
+    mock_pipeline = MagicMock()
+    mock_pipeline.acquire_transcript.return_value = RawTranscript(
+        video_id="mock_video_123",
+        segments=[TranscriptSegment(text="hello", start=0.0, duration=1.0)],
+        source="youtube_api",
+        language="en",
+    )
+    mock_pipeline.persist_transcript.return_value = "transcript-123"
+
+    with patch(
+        "src.services.transcription_service.TranscriptPipeline",
+        return_value=mock_pipeline,
+    ), patch(
+        "src.services.transcription_service.send_webhook",
+        new=AsyncMock(),
+    ):
+        yield mock_pipeline
 
 
 @pytest.fixture

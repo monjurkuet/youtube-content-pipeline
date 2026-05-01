@@ -7,12 +7,13 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from src.core.config import get_settings
-from src.core.exceptions import PipelineError
+from src.core.exceptions import PipelineError, TranscriptionFailureError
 from src.core.schemas import (
     ProcessingResult,
     RawTranscript,
     TranscriptDocument,
 )
+from src.transcription.failures import create_failure, failure_from_exception
 from src.transcription.handler import TranscriptionHandler, identify_source_type
 
 console = Console()
@@ -47,7 +48,7 @@ class TranscriptPipeline:
             ProcessingResult with transcript information
         """
         # Identify source
-        source_type, source_id = identify_source_type(source)
+        source_type, source_id = self.identify_source(source)
 
         # Initialize result
         started_at = datetime.now(timezone.utc)
@@ -67,7 +68,7 @@ class TranscriptPipeline:
                 task = progress.add_task("Acquiring transcript...", total=None)
                 console.print(f"[dim]Step 1/2: Acquiring transcript from {source_type}...[/dim]")
 
-                raw_transcript = self._get_transcript(source_id, source_type)
+                raw_transcript = self.acquire_transcript(source_id, source_type)
 
                 progress.update(task, completed=True)
                 console.print(
@@ -91,7 +92,7 @@ class TranscriptPipeline:
                     task = progress.add_task("Saving to database...", total=None)
                     console.print("[dim]Step 2/2: Saving transcript to MongoDB...[/dim]")
 
-                    doc_id = self._save_to_database(transcript_doc)
+                    doc_id = self.save_transcript_document(transcript_doc)
 
                     progress.update(task, completed=True)
                     console.print(
@@ -128,14 +129,62 @@ class TranscriptPipeline:
 
             return result
 
+        except TranscriptionFailureError:
+            raise
         except Exception as e:
             raise PipelineError(f"Pipeline failed: {e}") from e
+
+    def identify_source(self, source: str) -> tuple[str, str]:
+        """Identify the source type and canonical source identifier."""
+        try:
+            return identify_source_type(source)
+        except Exception as exc:
+            raise TranscriptionFailureError(
+                failure_from_exception(
+                    exc,
+                    stage="source_identification",
+                    default_category="invalid_source",
+                    retryable=False,
+                )
+            ) from exc
+
+    def acquire_transcript(self, source_id: str, source_type: str) -> RawTranscript:
+        """Acquire a transcript without persisting it."""
+        try:
+            return self._get_transcript(source_id, source_type)
+        except TranscriptionFailureError:
+            raise
+        except Exception as exc:
+            raise TranscriptionFailureError(
+                failure_from_exception(
+                    exc,
+                    stage="pipeline",
+                    video_id=source_id if source_type == "youtube" else None,
+                    default_category="unknown",
+                    retryable=False,
+                )
+            ) from exc
+
+    def persist_transcript(
+        self,
+        raw_transcript: RawTranscript,
+        source_type: str,
+        source: str,
+    ) -> str:
+        """Persist a transcript and update YouTube metadata when possible."""
+        transcript_doc = TranscriptDocument.from_raw_transcript(
+            raw_transcript=raw_transcript,
+            source_type=source_type,  # type: ignore[arg-type]
+            source_url=source if source_type in ("youtube", "url") else None,
+            title=None,
+        )
+        return self.save_transcript_document(transcript_doc)
 
     def _get_transcript(self, source_id: str, source_type: str) -> RawTranscript:
         """Get transcript from source."""
         return self.transcription.get_transcript(source_id, source_type)
 
-    def _save_to_database(self, transcript_doc: TranscriptDocument) -> str:
+    def save_transcript_document(self, transcript_doc: TranscriptDocument) -> str:
         """Save transcript to MongoDB.
 
         Runs async database operations in sync context.
@@ -165,9 +214,23 @@ class TranscriptPipeline:
                 doc_id = future.result()
                 console.print(f"   [green]✓ Database: Saved with ID {doc_id[:16]}...[/green]")
                 return doc_id
+        except TranscriptionFailureError:
+            raise
         except Exception as e:
             console.print(f"   [red]✗ Database: Save failed: {e}[/red]")
-            raise
+            raise TranscriptionFailureError(
+                create_failure(
+                    f"Database save failed: {e}",
+                    "database",
+                    "database",
+                    video_id=transcript_doc.video_id,
+                    retryable=False,
+                )
+            ) from e
+
+    def _save_to_database(self, transcript_doc: TranscriptDocument) -> str:
+        """Backward-compatible alias for existing tests and callers."""
+        return self.save_transcript_document(transcript_doc)
 
 
 def get_transcript(

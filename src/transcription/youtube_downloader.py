@@ -12,6 +12,8 @@ from typing import Literal
 
 from rich.console import Console
 
+from src.core.exceptions import TranscriptionFailureError
+from src.transcription.failures import create_failure
 from src.video.cookie_manager import get_cookie_manager
 
 console = Console()
@@ -25,6 +27,7 @@ ErrorCategory = Literal[
     "private",
     "unavailable",
     "live_stream",
+    "timeout",
     "unknown",
 ]
 
@@ -153,7 +156,7 @@ class YouTubeDownloader:
             return True, "Available", "unknown"
 
         except subprocess.TimeoutExpired:
-            return False, "Timeout checking video", "unknown"
+            return False, "Timeout checking video", "timeout"
         except Exception as e:
             return False, f"Check failed: {str(e)[:50]}", "unknown"
 
@@ -183,8 +186,14 @@ class YouTubeDownloader:
         # Pre-flight check
         is_available, reason, error_category = self.check_video_availability(video_id)
         if not is_available:
-            from src.core.exceptions import WhisperError
-            raise WhisperError(f"Pre-flight check failed: {reason}")
+            raise TranscriptionFailureError(
+                create_failure(
+                    f"Pre-flight check failed: {reason}",
+                    error_category,
+                    "download",
+                    video_id=video_id,
+                )
+            )
 
         output_path = self.work_dir / f"{video_id}_audio.mp3"
         url = f"https://www.youtube.com/watch?v={video_id}"
@@ -193,6 +202,7 @@ class YouTubeDownloader:
 
         format_options = ["bestaudio/best", "bestaudio", "m4a/mp3/aac/opus/m4r/flac/wav"]
         consecutive_403_errors = 0
+        last_failure = None
 
         for format_option in format_options:
             cmd = _get_yt_dlp_base_cmd(output_path)
@@ -207,6 +217,12 @@ class YouTubeDownloader:
             except subprocess.CalledProcessError as e:
                 error_detail = e.stderr if e.stderr else str(e)
                 reason, category = self.classify_error(error_detail)
+                last_failure = create_failure(
+                    reason,
+                    category,
+                    "download",
+                    video_id=video_id,
+                )
 
                 if category == "temporary_block":
                     consecutive_403_errors += 1
@@ -229,12 +245,27 @@ class YouTubeDownloader:
                         except Exception:
                             continue
 
-                if category in ["private", "members_only", "age_restricted", "geo_restricted", "live_stream", "unavailable"]:
-                    from src.core.exceptions import WhisperError
-                    raise WhisperError(f"Permanent error: {error_detail}")
+                if category in [
+                    "private",
+                    "members_only",
+                    "age_restricted",
+                    "geo_restricted",
+                    "live_stream",
+                    "unavailable",
+                ]:
+                    raise TranscriptionFailureError(last_failure)
 
                 if "Requested format is not available" in error_detail:
                     continue
+            except subprocess.TimeoutExpired as e:
+                raise TranscriptionFailureError(
+                    create_failure(
+                        f"yt-dlp timed out while downloading audio: {e}",
+                        "timeout",
+                        "download",
+                        video_id=video_id,
+                    )
+                ) from e
 
         # Last try without cookies
         final_cmd = _get_yt_dlp_base_cmd(output_path)
@@ -244,9 +275,27 @@ class YouTubeDownloader:
         try:
             subprocess.run(final_cmd, check=True, timeout=300, capture_output=True, text=True)
             return self._find_audio_file(video_id, output_path)
+        except subprocess.TimeoutExpired as e:
+            raise TranscriptionFailureError(
+                create_failure(
+                    f"yt-dlp timed out while downloading audio: {e}",
+                    "timeout",
+                    "download",
+                    video_id=video_id,
+                )
+            ) from e
         except Exception as e:
-            from src.core.exceptions import WhisperError
-            raise WhisperError(f"Audio download failed after all attempts: {e}")
+            if last_failure is not None:
+                raise TranscriptionFailureError(last_failure) from e
+            raise TranscriptionFailureError(
+                create_failure(
+                    f"Audio download failed after all attempts: {e}",
+                    "provider_error",
+                    "download",
+                    video_id=video_id,
+                    retryable=False,
+                )
+            ) from e
 
     def _find_audio_file(self, video_id: str, base_path: Path) -> Path:
         """Find the actually downloaded file."""
@@ -257,5 +306,12 @@ class YouTubeDownloader:
         for f in self.work_dir.glob(f"{video_id}_audio.*"):
             if f.suffix in [".mp3", ".m4a", ".wav", ".opus", ".webm"]:
                 return f
-        from src.core.exceptions import WhisperError
-        raise WhisperError(f"Download completed but file not found for {video_id}")
+        raise TranscriptionFailureError(
+            create_failure(
+                f"Download completed but file not found for {video_id}",
+                "provider_error",
+                "download",
+                video_id=video_id,
+                retryable=False,
+            )
+        )

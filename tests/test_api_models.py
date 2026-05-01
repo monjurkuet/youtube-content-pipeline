@@ -69,6 +69,25 @@ class TestJobStatusResponse:
             video_id="test123",
             progress_percent=50.0,
             error_message="Download failed",
+            error_category="temporary_block",
+            retryable=True,
+            failed_stage="download",
         )
         assert response.status == "failed"
         assert response.error_message == "Download failed"
+        assert response.error == "Download failed"
+        assert response.error_category == "temporary_block"
+        assert response.retryable is True
+        assert response.failed_stage == "download"
+
+    def test_failed_status_normalizes_legacy_error(self):
+        """Test failed job status accepts the deprecated error field."""
+        response = JobStatusResponse(
+            job_id="job_test123",
+            status="failed",
+            video_id="test123",
+            progress_percent=100.0,
+            error="Legacy failure",
+        )
+        assert response.error == "Legacy failure"
+        assert response.error_message == "Legacy failure"

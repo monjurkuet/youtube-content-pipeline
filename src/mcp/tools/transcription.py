@@ -11,6 +11,7 @@ from typing import Any
 
 from src.core.schemas import TranscriptDocument
 from src.database.manager import MongoDBManager
+from src.transcription.failures import failure_from_exception
 from src.transcription.handler import TranscriptionHandler, identify_source_type
 
 
@@ -111,10 +112,21 @@ async def transcribe_video(
         return result
 
     except Exception as e:
+        failure = failure_from_exception(
+            e,
+            stage="pipeline",
+            video_id=source,
+            default_category="unknown",
+            retryable=False,
+        )
         return {
             "job_id": job_id,
             "status": "failed",
-            "video_id": source,
-            "message": f"Transcription failed: {e}",
-            "error": str(e),
+            "video_id": failure.video_id or source,
+            "message": f"Transcription failed: {failure.message}",
+            "error_message": failure.message,
+            "error_category": failure.category,
+            "retryable": failure.retryable,
+            "failed_stage": failure.stage,
+            "error": failure.message,
         }

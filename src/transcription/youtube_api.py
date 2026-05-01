@@ -14,7 +14,9 @@ from youtube_transcript_api._errors import (
     YouTubeRequestFailed,
 )
 
+from src.core.exceptions import TranscriptionFailureError
 from src.core.schemas import RawTranscript, TranscriptSegment
+from src.transcription.failures import create_failure
 from src.video.cookie_manager import get_cookie_manager
 
 logger = logging.getLogger(__name__)
@@ -76,13 +78,46 @@ class YouTubeAPIProvider:
 
         except (TranscriptsDisabled, VideoUnavailable, NoTranscriptFound) as e:
             logger.warning(f"YouTube transcript not available for {video_id}: {e}")
-            raise
+            if isinstance(e, VideoUnavailable):
+                raise TranscriptionFailureError(
+                    create_failure(
+                        str(e),
+                        "unavailable",
+                        "youtube_api",
+                        video_id=video_id,
+                        retryable=False,
+                    )
+                ) from e
+            raise TranscriptionFailureError(
+                create_failure(
+                    str(e),
+                    "provider_error",
+                    "youtube_api",
+                    video_id=video_id,
+                    retryable=False,
+                )
+            ) from e
         except YouTubeRequestFailed:
             logger.error("YouTube API rate limit or request blocked hit")
-            raise
+            raise TranscriptionFailureError(
+                create_failure(
+                    "YouTube transcript API request failed",
+                    "remote_service",
+                    "youtube_api",
+                    video_id=video_id,
+                )
+            )
         except Exception as e:
             logger.error(f"YouTube API error for {video_id}: {e}")
-            raise
+            raise TranscriptionFailureError(
+                create_failure(
+                    str(e),
+                    "provider_error",
+                    "youtube_api",
+                    video_id=video_id,
+                    retryable=False,
+                )
+            ) from e
 
     def _apply_rate_limiting(self):
         """Simple rate limiting to avoid TooManyRequests."""

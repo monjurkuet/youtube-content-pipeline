@@ -2,14 +2,14 @@
 
 import logging
 from pathlib import Path
-from typing import Any
 
 from rich.console import Console
 
 from src.core.config import get_settings_with_yaml
-from src.core.exceptions import WhisperError
+from src.core.exceptions import TranscriptionFailureError, WhisperError
 from src.core.schemas import RawTranscript
 
+from src.transcription.failures import create_failure, failure_from_exception
 from src.video.cookie_manager import get_cookie_manager
 from src.transcription.youtube_api import YouTubeAPIProvider
 from src.transcription.youtube_downloader import YouTubeDownloader, ErrorCategory
@@ -37,23 +37,78 @@ class TranscriptionHandler:
         """Get transcript with automatic fallback."""
         if source_type == "youtube":
             return self._get_youtube_transcript_with_fallback(video_id)
-        elif source_type == "local":
-            return self.whisper_provider.transcribe(video_id)
-        elif source_type == "url":
-            # For remote URLs, download and transcribe
+
+        if source_type == "local":
+            try:
+                return self.whisper_provider.transcribe(video_id)
+            except Exception as exc:
+                raise TranscriptionFailureError(
+                    failure_from_exception(
+                        exc,
+                        stage="transcription",
+                        video_id=video_id,
+                        default_category="provider_error",
+                        retryable=False,
+                    )
+                ) from exc
+
+        if source_type == "url":
             from src.core.utils import download_remote_file
-            audio_path = download_remote_file(video_id, self.work_dir)
-            return self.whisper_provider.transcribe(str(audio_path))
-        else:
-            raise ValueError(f"Unsupported source type: {source_type}")
+
+            try:
+                audio_path = download_remote_file(video_id, self.work_dir)
+            except Exception as exc:
+                raise TranscriptionFailureError(
+                    failure_from_exception(
+                        exc,
+                        stage="download",
+                        video_id=video_id,
+                        default_category="remote_service",
+                    )
+                ) from exc
+
+            try:
+                return self.whisper_provider.transcribe(str(audio_path))
+            except Exception as exc:
+                raise TranscriptionFailureError(
+                    failure_from_exception(
+                        exc,
+                        stage="transcription",
+                        video_id=video_id,
+                        default_category="provider_error",
+                        retryable=False,
+                    )
+                ) from exc
+
+        raise TranscriptionFailureError(
+            create_failure(
+                f"Unsupported source type: {source_type}",
+                "invalid_source",
+                "source_identification",
+                video_id=video_id,
+                retryable=False,
+            )
+        )
 
     def _get_youtube_transcript_with_fallback(self, video_id: str) -> RawTranscript:
         """Get YouTube transcript with Whisper fallback."""
         try:
             # Step 1: Try official YouTube API
             return self.youtube_api_provider.get_transcript(video_id)
-        except Exception:
+        except TranscriptionFailureError as exc:
+            logger.info(
+                "Falling back to Whisper for %s after YouTube API failure: %s",
+                video_id,
+                exc.failure.message,
+            )
             # Step 2: Fallback to audio download + Whisper
+            return self._transcribe_youtube_with_whisper(video_id)
+        except Exception as exc:
+            logger.info(
+                "Falling back to Whisper for %s after unexpected YouTube API error: %s",
+                video_id,
+                exc,
+            )
             return self._transcribe_youtube_with_whisper(video_id)
 
     def _transcribe_youtube_with_whisper(self, video_id: str) -> RawTranscript:
@@ -66,10 +121,28 @@ class TranscriptionHandler:
             result = self.whisper_provider.transcribe(str(audio_path))
             result.video_id = video_id
             return result
-        except WhisperError:
+        except TranscriptionFailureError:
             raise
+        except WhisperError as exc:
+            raise TranscriptionFailureError(
+                create_failure(
+                    str(exc),
+                    "provider_error",
+                    "transcription",
+                    video_id=video_id,
+                    retryable=False,
+                )
+            ) from exc
         except Exception as e:
-            raise WhisperError(f"Whisper transcription failed for {video_id}: {e}")
+            raise TranscriptionFailureError(
+                failure_from_exception(
+                    e,
+                    stage="transcription",
+                    video_id=video_id,
+                    default_category="provider_error",
+                    retryable=False,
+                )
+            ) from e
 
     # Aliases for compatibility if needed
     def _check_video_availability(self, video_id: str) -> tuple[bool, str, ErrorCategory]:

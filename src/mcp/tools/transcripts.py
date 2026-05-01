@@ -157,12 +157,10 @@ async def get_job_status(job_id: str) -> dict[str, Any]:
         result = await get_job_status("job_abc123_20240307120000")
         # Returns: {"job_id": "...", "status": "completed", "progress": 100, ...}
     """
-    from src.database.redis import get_redis_manager
-
-    redis_manager = get_redis_manager()
+    from src.services.transcription_service import get_job
 
     try:
-        job = await redis_manager.get_job(job_id)
+        job = await get_job(job_id)
 
         if job is None:
             return {
@@ -178,7 +176,11 @@ async def get_job_status(job_id: str) -> dict[str, Any]:
             "current_step": job.get("current_step", ""),
             "video_id": job.get("video_id", ""),
             "result_url": job.get("result_url"),
-            "error": job.get("error_message"),
+            "error": job.get("error_message") or job.get("error"),
+            "error_message": job.get("error_message"),
+            "error_category": job.get("error_category"),
+            "retryable": job.get("retryable", False),
+            "failed_stage": job.get("failed_stage"),
         }
 
     except Exception as e:

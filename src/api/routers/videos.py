@@ -1,14 +1,13 @@
 """Video transcription endpoints."""
 
 import logging
-from datetime import datetime, timezone
 from typing import Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, Field
 
-from src.api.dependencies import get_db, get_db_manager_dep
+from src.api.dependencies import get_db
 from src.api.models.requests import (
     JobStatusResponse,
     TranscriptionJobResponse,
@@ -17,16 +16,12 @@ from src.api.models.requests import (
 from src.api.security import validate_api_key
 from src.core.constants import JobStatus, Priority
 from src.core.config import get_settings
-from src.database.manager import MongoDBManager
-from src.database.redis import get_redis_manager
 from src.services.transcription_service import (
     get_job,
+    list_jobs_data,
+    resolve_job_source_metadata,
     submit_transcription_job,
-    _jobs_memory,
 )
-
-# Use the same lazy accessor as transcription_service
-redis_manager = get_redis_manager()
 
 logger = logging.getLogger(__name__)
 
@@ -58,9 +53,7 @@ async def transcribe_video_endpoint(
     auth_ctx=Depends(validate_api_key),
 ) -> TranscriptionJobResponse:
     """Submit a video for transcription."""
-    # Identify video ID for response
-    from src.core.utils import extract_video_id
-    video_id = extract_video_id(request.source) or "unknown"
+    source_metadata = resolve_job_source_metadata(request.source)
 
     job_id = await submit_transcription_job(
         source=request.source,
@@ -74,7 +67,7 @@ async def transcribe_video_endpoint(
     return TranscriptionJobResponse(
         job_id=job_id,
         status="queued",
-        video_id=video_id,
+        video_id=source_metadata["video_id"],
         message="Transcription job submitted successfully",
     )
 
@@ -118,21 +111,11 @@ async def list_jobs(
     auth_ctx=Depends(validate_api_key),
 ) -> list[JobStatusResponse]:
     """List transcription jobs."""
-    jobs = []
-    # Always call list_jobs - it handles auto-connect internally
-    try:
-        jobs = await redis_manager.list_jobs(
-            limit=limit,
-            offset=offset,
-            status_filter=status_filter,
-        )
-    except Exception:
-        # Fallback to memory if Redis fails
-        all_jobs = list(_jobs_memory.values())
-        if status_filter:
-            all_jobs = [j for j in all_jobs if j.get("status") == status_filter]
-        jobs = all_jobs[offset : offset + limit]
-
+    jobs = await list_jobs_data(
+        limit=limit,
+        offset=offset,
+        status_filter=status_filter,
+    )
     return [JobStatusResponse(**j) for j in jobs]
 
 

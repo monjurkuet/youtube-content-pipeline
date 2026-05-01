@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # Raw transcript models (input)
@@ -36,6 +36,42 @@ class RawTranscript(BaseModel):
         if not self.segments:
             return 0.0
         return self.segments[-1].end
+
+
+TranscriptionFailureCategory = Literal[
+    "invalid_source",
+    "geo_restricted",
+    "members_only",
+    "age_restricted",
+    "private",
+    "unavailable",
+    "live_stream",
+    "temporary_block",
+    "timeout",
+    "remote_service",
+    "provider_error",
+    "database",
+    "unknown",
+]
+
+TranscriptionFailureStage = Literal[
+    "source_identification",
+    "youtube_api",
+    "download",
+    "transcription",
+    "database",
+    "pipeline",
+]
+
+
+class TranscriptionFailure(BaseModel):
+    """Structured failure details for transcription jobs."""
+
+    message: str
+    category: TranscriptionFailureCategory
+    retryable: bool = False
+    stage: TranscriptionFailureStage
+    video_id: str | None = None
 
 
 class TranscriptDocument(BaseModel):
@@ -121,7 +157,16 @@ class ProcessingResult(BaseModel):
     # Extra info
     success: bool = True
     error: str | None = None
+    failure: TranscriptionFailure | None = None
     transcript_id: str | None = None
+
+    @model_validator(mode="after")
+    def sync_failure_fields(self) -> "ProcessingResult":
+        """Keep compatibility fields aligned with structured failures."""
+        if self.failure:
+            self.success = False
+            self.error = self.failure.message
+        return self
 
     def model_dump_for_mongo(self) -> dict:
         """Convert to dict suitable for MongoDB storage."""

@@ -5,7 +5,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from src.core.exceptions import TranscriptionFailureError
 from src.core.schemas import ProcessingResult, RawTranscript, TranscriptSegment
+from src.transcription.failures import create_failure
 
 
 class TestSchemas:
@@ -125,3 +127,57 @@ class TestTranscriptPipelinePersistence:
         mock_db.mark_transcript_completed.assert_awaited_once_with(
             "dQw4w9WgXcQ", "transcript-123"
         )
+
+
+class TestStructuredFailures:
+    """Test structured failure propagation in the pipeline stack."""
+
+    def test_pipeline_identify_source_preserves_invalid_source_failure(self):
+        """Invalid sources should produce a structured non-retryable failure."""
+        from src.pipeline.transcript import TranscriptPipeline
+
+        pipeline = TranscriptPipeline()
+
+        with pytest.raises(TranscriptionFailureError) as exc_info:
+            pipeline.identify_source("not-a-valid-source")
+
+        failure = exc_info.value.failure
+        assert failure.category == "invalid_source"
+        assert failure.retryable is False
+        assert failure.stage == "source_identification"
+
+    def test_handler_fallback_preserves_terminal_failure(self):
+        """Terminal downloader failures should survive the fallback chain intact."""
+        from src.transcription.handler import TranscriptionHandler
+
+        handler = TranscriptionHandler()
+        failure = create_failure(
+            "Access forbidden",
+            "temporary_block",
+            "download",
+            video_id="dQw4w9WgXcQ",
+        )
+
+        with patch.object(
+            handler.youtube_api_provider,
+            "get_transcript",
+            side_effect=TranscriptionFailureError(
+                create_failure(
+                    "Transcript unavailable",
+                    "provider_error",
+                    "youtube_api",
+                    video_id="dQw4w9WgXcQ",
+                    retryable=False,
+                )
+            ),
+        ), patch.object(
+            handler.youtube_downloader,
+            "download_audio",
+            side_effect=TranscriptionFailureError(failure),
+        ):
+            with pytest.raises(TranscriptionFailureError) as exc_info:
+                handler.get_transcript("dQw4w9WgXcQ", "youtube")
+
+        assert exc_info.value.failure.category == "temporary_block"
+        assert exc_info.value.failure.retryable is True
+        assert exc_info.value.failure.stage == "download"

@@ -164,10 +164,36 @@ class JobStatusResponse(BaseModel):
         default=None,
         description="Error message if job failed",
     )
+    error_category: str | None = Field(
+        default=None,
+        description="Structured failure category for failed jobs",
+    )
+    retryable: bool = Field(
+        default=False,
+        description="Whether the latest failure is automatically retryable",
+    )
+    failed_stage: str | None = Field(
+        default=None,
+        description="Pipeline stage where the job failed",
+    )
+    error: str | None = Field(
+        default=None,
+        description="Deprecated alias for error_message",
+        deprecated=True,
+    )
     result_url: str | None = Field(
         default=None,
         description="URL to fetch results (when completed)",
     )
+
+    @model_validator(mode="after")
+    def sync_error_fields(self) -> "JobStatusResponse":
+        """Mirror compatibility error fields."""
+        if self.error_message is None and self.error is not None:
+            self.error_message = self.error
+        if self.error is None and self.error_message is not None:
+            self.error = self.error_message
+        return self
 
 
 class TranscriptSummaryResponse(BaseModel):
