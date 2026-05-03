@@ -12,6 +12,8 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
 from src.core.config import get_settings
 from src.core.schemas import TranscriptDocument
+from src.core.constants import ERROR_CATEGORY_TO_AVAILABILITY
+from src.transcription.failures import PERMANENT_FAILURE_CATEGORIES
 
 
 class MongoDBManager:
@@ -98,6 +100,8 @@ class MongoDBManager:
         await self.video_metadata.create_index("channel_id")
         await self.video_metadata.create_index("transcript_status")
         await self.video_metadata.create_index("published_at")
+        await self.video_metadata.create_index("availability")
+        await self.video_metadata.create_index("transcript_error_category")
 
     async def save_transcript(self, transcript_doc: TranscriptDocument) -> str:
         """Save transcript to MongoDB.
@@ -362,20 +366,35 @@ class MongoDBManager:
         self,
         channel_id: str | None = None,
         limit: int = 1000,
+        skip_permanent_failures: bool = True,
     ) -> list[dict[str, Any]]:
         """Get videos pending transcription.
 
         Args:
             channel_id: Optional channel ID filter
             limit: Maximum results to return
+            skip_permanent_failures: When True, exclude videos that were
+                previously marked with a permanent failure category but
+                later reset to pending (e.g. members_only, private, geo_restricted).
 
         Returns:
             List of video metadata documents with pending status
         """
         await self.initialize()
-        query = {"transcript_status": "pending"}
+        query: dict[str, Any] = {"transcript_status": "pending"}
         if channel_id:
             query["channel_id"] = channel_id
+
+        if skip_permanent_failures:
+            query["transcript_error_category"] = {
+                "$nin": list(PERMANENT_FAILURE_CATEGORIES)
+            }
+
+            # Also exclude videos already tagged with permanent availability
+            from src.core.constants import PERMANENT_AVAILABILITY
+            query["availability"] = {
+                "$nin": list(PERMANENT_AVAILABILITY)
+            }
 
         cursor = self.video_metadata.find(query).sort("published_at", -1).limit(limit)
 
@@ -391,6 +410,7 @@ class MongoDBManager:
         self,
         channel_id: str | None = None,
         limit: int = 1000,
+        skip_permanent_failures: bool = False,
     ) -> list[dict[str, Any]]:
         """Get videos with failed transcription status.
 
@@ -400,11 +420,18 @@ class MongoDBManager:
 
         Returns:
             List of video metadata documents with failed status
+            skip_permanent_failures: When True, exclude videos with permanent
+                failure categories (members_only, private, geo_restricted, etc.)
         """
         await self.initialize()
         query = {"transcript_status": "failed"}
         if channel_id:
             query["channel_id"] = channel_id
+
+        if skip_permanent_failures:
+            query["transcript_error_category"] = {
+                "$nin": list(PERMANENT_FAILURE_CATEGORIES)
+            }
 
         cursor = self.video_metadata.find(query).sort("published_at", -1).limit(limit)
 
@@ -470,6 +497,9 @@ class MongoDBManager:
             update["$set"]["transcript_error"] = error_message
         if error_category:
             update["$set"]["transcript_error_category"] = error_category
+            # Map error category to availability for permanent restrictions
+            if error_category in ERROR_CATEGORY_TO_AVAILABILITY:
+                update["$set"]["availability"] = ERROR_CATEGORY_TO_AVAILABILITY[error_category]
 
         result = await self.video_metadata.update_one(
             {"video_id": video_id},

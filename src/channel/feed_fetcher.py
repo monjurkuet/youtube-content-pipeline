@@ -9,6 +9,7 @@ from typing import Literal
 
 from rich.console import Console
 
+from src.core.constants import YTDLP_AVAILABILITY_MAP
 from src.core.http_session import get
 from src.video.cookie_manager import YouTubeCookieManager
 
@@ -280,6 +281,10 @@ def fetch_recent_with_ytdlp(channel_url: str, max_videos: int = 15) -> list[Vide
                         if thumbnails:
                             thumbnail = thumbnails[-1].get("url")
 
+                    # Extract availability from yt-dlp JSON
+                    raw_availability = data.get("availability")
+                    availability = YTDLP_AVAILABILITY_MAP.get(raw_availability, "unknown") if raw_availability else "unknown"
+
                     videos.append(
                         VideoMetadata(
                             video_id=video_id,
@@ -295,6 +300,7 @@ def fetch_recent_with_ytdlp(channel_url: str, max_videos: int = 15) -> list[Vide
                             published_at=published_at,
                             channel_id=channel_id,
                             channel_title=channel_title,
+                            availability=availability,
                         )
                     )
 
@@ -434,6 +440,10 @@ def fetch_all_with_ytdlp(
                 # Extract description
                 description = data.get("description")
 
+                # Extract availability from yt-dlp JSON
+                raw_availability = data.get("availability")
+                availability = YTDLP_AVAILABILITY_MAP.get(raw_availability, "unknown") if raw_availability else "unknown"
+
                 videos.append(
                     VideoMetadata(
                         video_id=video_id,
@@ -445,6 +455,7 @@ def fetch_all_with_ytdlp(
                         published_at=published_at,
                         channel_id=channel_id,
                         channel_title=channel,
+                        availability=availability,
                     )
                 )
             except json.JSONDecodeError as e:

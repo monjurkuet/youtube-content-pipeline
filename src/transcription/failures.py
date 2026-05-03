@@ -15,10 +15,26 @@ RETRYABLE_FAILURE_CATEGORIES = frozenset(
     }
 )
 
+PERMANENT_FAILURE_CATEGORIES = frozenset(
+    {
+        "members_only",
+        "geo_restricted",
+        "age_restricted",
+        "private",
+        "unavailable",
+        "invalid_source",
+    }
+)
+
 
 def is_retryable_failure_category(category: TranscriptionFailureCategory) -> bool:
     """Return whether the category should be retried automatically."""
     return category in RETRYABLE_FAILURE_CATEGORIES
+
+
+def is_permanent_failure_category(category: TranscriptionFailureCategory) -> bool:
+    """Return whether the category represents a permanent, non-retryable failure."""
+    return category in PERMANENT_FAILURE_CATEGORIES
 
 
 def create_failure(

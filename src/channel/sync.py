@@ -183,6 +183,7 @@ def sync_channel(
                     duration_seconds=video.duration_seconds,
                     view_count=video.view_count,
                     published_at=video.published_at,
+                    availability=video.availability,
                 )
                 
                 # Check if exists

@@ -149,6 +149,12 @@ class YouTubeDownloader:
                 return False, "Video is private", "private"
             elif availability == "unavailable":
                 return False, "Video unavailable", "unavailable"
+            elif availability == "members_only":
+                return False, "Members-only video", "members_only"
+            elif availability == "premium_only":
+                return False, "Premium-only video", "premium_only"
+            elif availability == "subscriber_only":
+                return False, "Subscriber-only video", "subscriber_only"
 
             if not data.get("title"):
                 return False, "Missing video title", "unavailable"

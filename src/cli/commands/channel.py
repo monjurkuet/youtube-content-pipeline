@@ -358,6 +358,11 @@ def channel_transcribe_pending(
     all_videos: bool = typer.Option(
         False, "--all", "-a", help="Transcribe ALL pending videos (no limit)"
     ),
+    include_restricted: bool = typer.Option(
+        False,
+        "--include-restricted",
+        help="Include permanently restricted videos (members-only, private, etc.)",
+    ),
 ):
     """Transcribe pending videos from channel.
 
@@ -379,10 +384,17 @@ def channel_transcribe_pending(
     if batch_size is None:
         batch_size = settings.batch_default_size
 
-    def check_video_availability(video_id: str) -> tuple[bool, str]:
-        """Check if video is available for transcription using yt-dlp."""
+    def check_video_availability(video_id: str) -> tuple[bool, str, str]:
+        """Check if video is available for transcription using yt-dlp.
+
+        Note: We don't use cookies here because yt-dlp with cookies causes
+        "Requested format is not available" errors with --flat-playlist.
+        Video metadata is public and doesn't require authentication.
+
+        Returns:
+            Tuple of (is_available, reason, error_category).
+        """
         try:
-            # Use --flat-playlist for faster metadata-only check
             cmd = [
                 "yt-dlp",
                 "--flat-playlist",
@@ -396,46 +408,64 @@ def channel_transcribe_pending(
             # Check stderr for errors (yt-dlp reports errors there)
             if result.returncode != 0:
                 error_msg = result.stderr.strip().lower()
+                error_detail = result.stderr.strip()
+
                 if "live event" in error_msg or "upcoming" in error_msg:
-                    return False, "Live stream (upcoming)"
+                    return False, "Live stream (upcoming)", "live_stream"
                 elif "private" in error_msg:
-                    return False, "Video is private"
+                    return False, "Video is private", "private"
                 elif "unavailable" in error_msg or "not available" in error_msg:
-                    return False, "Video unavailable"
+                    return False, "Video unavailable", "unavailable"
                 elif "members-only" in error_msg or "join" in error_msg:
-                    return False, "Members-only video"
+                    return False, "Members-only video", "members_only"
                 elif "age" in error_msg and "restricted" in error_msg:
-                    return False, "Age-restricted"
+                    return False, "Age-restricted", "age_restricted"
+                elif (
+                    "geo" in error_msg
+                    or "country" in error_msg
+                    or "not available in your region" in error_msg
+                ):
+                    return False, "Geo-restricted", "geo_restricted"
+                elif "403" in error_msg and "forbidden" in error_msg:
+                    return False, "Access forbidden (403)", "temporary_block"
                 else:
-                    return False, f"Video error: {result.stderr.strip()[:50]}"
+                    return False, f"Video error: {error_detail[:50]}", "unknown"
 
             if not result.stdout.strip():
-                return False, "No video metadata"
+                return False, "No video metadata", "unavailable"
 
             data = json.loads(result.stdout.strip())
 
             # Check for live stream indicators
             live_status = data.get("live_status")
             if live_status in ["is_live", "is_upcoming", "post_live"]:
-                return False, f"Live stream ({live_status})"
+                return False, f"Live stream ({live_status})", "live_stream"
 
             # Check availability field
             availability = data.get("availability")
-            if availability in ["private", "unavailable"]:
-                return False, f"Video {availability}"
+            if availability == "private":
+                return False, "Video is private", "private"
+            elif availability == "unavailable":
+                return False, "Video unavailable", "unavailable"
+            elif availability == "members_only":
+                return False, "Members-only video", "members_only"
+            elif availability == "premium_only":
+                return False, "Premium-only video", "premium_only"
+            elif availability == "subscriber_only":
+                return False, "Subscriber-only video", "subscriber_only"
 
             # Check for basic metadata (if we have title, it's likely playable)
             if not data.get("title"):
-                return False, "Missing video title"
+                return False, "Missing video title", "unavailable"
 
-            return True, "Available"
+            return True, "Available", "unknown"
 
         except subprocess.TimeoutExpired:
-            return False, "Timeout checking video"
+            return False, "Timeout checking video", "timeout"
         except json.JSONDecodeError:
-            return False, "Invalid video metadata"
+            return False, "Invalid video metadata", "unavailable"
         except Exception as e:
-            return False, f"Check failed: {str(e)[:50]}"
+            return False, f"Check failed: {str(e)[:50]}", "unknown"
 
     try:
         channel_id = None
@@ -448,7 +478,7 @@ def channel_transcribe_pending(
         rprint(f"\n[bold blue]Transcribing pending videos from {channel_handle}[/bold blue]\n")
 
         # Get pending videos
-        pending = asyncio.run(get_pending_videos(channel_id))
+        pending = asyncio.run(get_pending_videos(channel_id, skip_permanent_failures=not include_restricted))
 
         if not pending:
             rprint("[green]✓ No pending videos to transcribe![/green]\n")
@@ -505,21 +535,23 @@ def channel_transcribe_pending(
                         await asyncio.sleep(delay)
 
                     # Check video availability first
-                    rprint("  [dim]Checking availability...[/dim]")
-                    is_available, reason = check_video_availability(video.video_id)
+                    rprint(" [dim]Checking availability...[/dim]")
+                    is_available, reason, error_category = check_video_availability(video.video_id)
 
                     if not is_available:
-                        rprint(f"  [yellow]⊘ Skipped: {reason}[/yellow]")
+                        rprint(f" [yellow]⊘ Skipped: {reason}[/yellow]")
                         skipped += 1
 
-                        # Mark as failed with reason using context manager
+                        # Mark as failed with reason and category
                         async with MongoDBManager() as db:
-                            await db.mark_transcript_failed(video.video_id, reason)
+                            await db.mark_transcript_failed(
+                                video.video_id, reason, error_category=error_category
+                            )
                         continue
 
                     try:
                         # Transcribe video synchronously (OpenVINO is not thread-safe)
-                        rprint("  [dim]Starting transcription...[/dim]")
+                        rprint(" [dim]Starting transcription...[/dim]")
                         video_url = f"https://www.youtube.com/watch?v={video.video_id}"
                         get_transcript(video_url, save_to_db=True)
 
@@ -529,27 +561,27 @@ def channel_transcribe_pending(
                         for attempt in range(max_retries):
                             async with MongoDBManager() as db:
                                 transcript = await db.get_transcript(video.video_id)
-                            if transcript:
-                                break
-                            if attempt < max_retries - 1:
-                                await asyncio.sleep(0.5 * (attempt + 1))
+                                if transcript:
+                                    break
+                                if attempt < max_retries - 1:
+                                    await asyncio.sleep(0.5 * (attempt + 1))
 
                         if transcript:
                             async with MongoDBManager() as db:
                                 await db.mark_transcript_completed(
                                     video.video_id, transcript["_id"]
                                 )
-                            rprint("  [green]✓ Transcribed and marked complete[/green]")
+                            rprint(" [green]✓ Transcribed and marked complete[/green]")
                             successes += 1
                         else:
                             rprint(
-                                "  [yellow]⚠ Transcribed but transcript not found in DB[/yellow]"
+                                " [yellow]⚠ Transcribed but transcript not found in DB[/yellow]"
                             )
                             successes += 1
 
                     except Exception as e:
                         error_msg = str(e)[:100]
-                        rprint(f"  [red]✗ Error: {escape(error_msg)}[/red]")
+                        rprint(f" [red]✗ Error: {escape(error_msg)}[/red]")
                         failures += 1
                         async with MongoDBManager() as db:
                             await db.mark_transcript_failed(video.video_id, error_msg)
@@ -593,9 +625,9 @@ def channel_retry_failed(
         help="Filter by error category.",
     ),
     skip_permanent: bool = typer.Option(
-        False,
-        "--skip-permanent",
-        help="Skip permanent failures (geo_restricted, members_only, private)",
+        True,
+        "--include-restricted",
+        help="Include permanently restricted videos (negates default skip)",
     ),
 ):
     """Retry failed transcriptions from channel.
@@ -679,6 +711,8 @@ def channel_retry_failed(
             elif availability == "unavailable":
                 return False, "Video unavailable", "unavailable"
 
+            elif availability == "members_only":
+                return False, "Members-only video", "members_only"
             # Check for basic metadata
             if not data.get("title"):
                 return False, "Missing video title", "unavailable"
@@ -808,6 +842,81 @@ def channel_retry_failed(
         rprint(f"[red]✗ Error: {escape(str(e))}[/red]")
         raise typer.Exit(1)
 
+
+
+@channel_app.command("restricted")
+def channel_restricted(
+    handle: str | None = typer.Argument(
+        None, help="Channel handle (optional, list all if not specified)"
+    ),
+    availability_filter: str | None = typer.Option(
+        None,
+        "-a",
+        "--availability",
+        help="Filter by availability type (members_only, premium_only, private, etc.)",
+    ),
+):
+    """List permanently restricted videos for a channel.
+
+    Shows videos tagged as members-only, premium-only, subscriber-only,
+    private, or unavailable. These are typically skipped during transcription.
+    """
+    from src.core.constants import PERMANENT_AVAILABILITY
+    from src.database.manager import MongoDBManager
+
+    try:
+        channel_id = None
+        channel_handle = "all channels"
+
+        if handle:
+            channel_id, _ = resolve_channel_handle(handle)
+            channel_handle = f"@{handle.lstrip('@')}"
+
+        rprint(f"\n[bold blue]Restricted videos for {channel_handle}[/bold blue]\n")
+
+        async def _fetch_restricted():
+            async with MongoDBManager() as db:
+                query: dict = {"availability": {"$in": list(PERMANENT_AVAILABILITY)}}
+                if channel_id:
+                    query["channel_id"] = channel_id
+                if availability_filter:
+                    query["availability"] = availability_filter
+
+                cursor = db.video_metadata.find(query).sort("published_at", -1)
+                results = []
+                async for doc in cursor:
+                    if "_id" in doc:
+                        doc["_id"] = str(doc["_id"])
+                    results.append(doc)
+                return results
+
+        results = asyncio.run(_fetch_restricted())
+
+        if not results:
+            rprint("[green]✓ No restricted videos found![/green]\n")
+            return
+
+        # Group by availability type
+        from collections import Counter
+        avail_counts = Counter(doc.get("availability", "unknown") for doc in results)
+
+        rprint(f"[bold]Total: {len(results)} restricted videos[/bold]")
+        for avail_type, count in avail_counts.most_common():
+            rprint(f"  {avail_type}: {count}")
+
+        rprint()
+        for doc in results[:50]:  # Show first 50
+            avail = doc.get("availability", "unknown")
+            title = doc.get("title", "Unknown")[:60]
+            video_id = doc.get("video_id", "?")
+            rprint(f"  [{avail}] {title}... ({video_id})")
+
+        if len(results) > 50:
+            rprint(f"\n  ... and {len(results) - 50} more")
+
+    except Exception as e:
+        rprint(f"[red]✗ Error: {escape(str(e))}[/red]")
+        raise typer.Exit(1)
 
 @channel_app.command("remove")
 def channel_remove(
