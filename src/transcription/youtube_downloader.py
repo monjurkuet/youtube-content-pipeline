@@ -111,23 +111,24 @@ class YouTubeDownloader:
 
     def check_video_availability(self, video_id: str) -> tuple[bool, str, ErrorCategory]:
         """Check if video is available for transcription using yt-dlp.
-        
-        Note: We don't use cookies here because yt-dlp with cookies causes
-        "Requested format is not available" errors with --flat-playlist.
-        Video metadata is public and doesn't require authentication.
+
+        Uses --dump-json without --flat-playlist to get video metadata.
+        --flat-playlist can cause "Requested format is not available" errors
+        and produces huge JSON output that causes timeouts.
         """
         try:
             cmd = [
                 "yt-dlp",
-                "--flat-playlist",
                 "--dump-json",
                 "--no-warnings",
                 "--quiet",
+                "--no-download",
+                "-f", "bestaudio/best",
                 f"https://www.youtube.com/watch?v={video_id}",
             ]
             # Note: No cookies - video metadata is public
 
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
             if result.returncode != 0:
                 error_detail = result.stderr.strip()
