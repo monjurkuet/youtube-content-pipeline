@@ -215,10 +215,30 @@ class TranscriptPipeline:
     def save_transcript_document(self, transcript_doc: TranscriptDocument) -> str:
         """Save transcript to MongoDB (sync wrapper for CLI usage).
 
-        Delegates to save_transcript_document_async via asyncio.run().
+        Detects whether we're inside a running event loop.
+        - No loop: safe to use asyncio.run()
+        - Inside loop: run in a separate thread with its own loop
         """
         try:
-            doc_id = asyncio.run(self.save_transcript_document_async(transcript_doc))
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        try:
+            if loop is None:
+                # No running loop — safe to use asyncio.run()
+                doc_id = asyncio.run(self.save_transcript_document_async(transcript_doc))
+            else:
+                # Already inside a loop (e.g. CLI's asyncio.run(process_all()))
+                # Run in a separate thread with its own event loop
+                import concurrent.futures
+
+                def _run_in_thread() -> str:
+                    return asyncio.run(self.save_transcript_document_async(transcript_doc))
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    doc_id = executor.submit(_run_in_thread).result()
+
             console.print(f" [green]✓ Database: Saved with ID {doc_id[:16]}...[/green]")
             return doc_id
         except TranscriptionFailureError:
