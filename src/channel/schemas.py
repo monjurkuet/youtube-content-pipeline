@@ -37,6 +37,7 @@ class VideoMetadataDocument(BaseModel):
     transcript_id: str | None = None
     transcript_error: str | None = None
     transcript_error_category: str | None = None
+    availability: str = "unknown"
     synced_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     def model_dump_for_mongo(self) -> dict[str, Any]:

@@ -117,7 +117,7 @@ class TranscriptDocument(BaseModel):
         # Validate source_type
         valid_source_types: tuple[str, ...] = ("youtube", "url", "local")
         if source_type not in valid_source_types:
-            source_type = "youtube"  # Default fallback
+            raise ValueError(f"Invalid source_type: {source_type!r}. Must be one of {valid_source_types}")
 
         return cls(
             video_id=raw_transcript.video_id,

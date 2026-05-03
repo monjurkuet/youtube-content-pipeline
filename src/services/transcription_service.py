@@ -104,7 +104,7 @@ async def get_job(job_id: str) -> dict[str, Any] | None:
         job = await _get_redis().get_job(job_id)
         if job:
             return normalize_job_payload(_deserialize_job_datetimes(job))
-        return job
+        # Redis returned None — fall through to check memory
     job = _jobs_memory.get(job_id)
     if job is None:
         return None
@@ -204,7 +204,6 @@ async def _acquire_transcript_with_retries(
                 stage="pipeline",
                 video_id=video_id,
                 default_category="unknown",
-                retryable=False,
             )
             logger.warning(
                 "Transcript acquisition failed for %s on attempt %s/%s: %s",

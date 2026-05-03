@@ -145,6 +145,6 @@ class TestRetryFailedCli:
 
             result = runner.invoke(app, ["channel", "retry-failed", "@ECKrown"])
 
-        assert result.exit_code == 0, result.stdout
-        assert "No failed transcriptions to retry" in result.stdout
-        mock_get.assert_awaited_once_with("test_channel_id")
+            assert result.exit_code == 0, result.stdout
+            assert "No failed transcriptions to retry" in result.stdout
+            mock_get.assert_awaited_once_with("test_channel_id", skip_permanent=True)

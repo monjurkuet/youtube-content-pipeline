@@ -284,3 +284,67 @@ class Priority:
 
 
 PRIORITIES = [Priority.LOW, Priority.NORMAL, Priority.HIGH]
+
+
+# =============================================================================
+# Video Availability / Restriction Constants
+# =============================================================================
+
+# Video availability states — matches yt-dlp's `availability` field
+VIDEO_AVAILABILITY_PUBLIC = "public"
+VIDEO_AVAILABILITY_UNLISTED = "unlisted"
+VIDEO_AVAILABILITY_MEMBERS_ONLY = "members_only"
+VIDEO_AVAILABILITY_PRIVATE = "private"
+VIDEO_AVAILABILITY_UNAVAILABLE = "unavailable"
+VIDEO_AVAILABILITY_GEO_RESTRICTED = "geo_restricted"
+VIDEO_AVAILABILITY_AGE_RESTRICTED = "age_restricted"
+VIDEO_AVAILABILITY_UNKNOWN = "unknown"
+
+VIDEO_AVAILABILITY_VALUES = frozenset({
+    VIDEO_AVAILABILITY_PUBLIC,
+    VIDEO_AVAILABILITY_UNLISTED,
+    VIDEO_AVAILABILITY_MEMBERS_ONLY,
+    VIDEO_AVAILABILITY_PRIVATE,
+    VIDEO_AVAILABILITY_UNAVAILABLE,
+    VIDEO_AVAILABILITY_GEO_RESTRICTED,
+    VIDEO_AVAILABILITY_AGE_RESTRICTED,
+    VIDEO_AVAILABILITY_UNKNOWN,
+})
+
+# Availability states that make a video permanently inaccessible for transcription.
+# These videos should be tagged and excluded from future retry attempts.
+PERMANENT_AVAILABILITY = frozenset({
+    VIDEO_AVAILABILITY_MEMBERS_ONLY,
+    VIDEO_AVAILABILITY_PRIVATE,
+    VIDEO_AVAILABILITY_UNAVAILABLE,
+    VIDEO_AVAILABILITY_GEO_RESTRICTED,
+})
+
+# Error categories that correspond to permanent restrictions.
+# Videos with these categories should not be retried.
+PERMANENT_FAILURE_CATEGORIES = frozenset({
+    "members_only",
+    "private",
+    "unavailable",
+    "geo_restricted",
+})
+
+# Mapping from yt-dlp availability strings to our normalized values
+YTDLP_AVAILABILITY_MAP: dict[str, str] = {
+    "public": VIDEO_AVAILABILITY_PUBLIC,
+    "unlisted": VIDEO_AVAILABILITY_UNLISTED,
+    "premium_only": VIDEO_AVAILABILITY_MEMBERS_ONLY,
+    "subscriber_only": VIDEO_AVAILABILITY_MEMBERS_ONLY,
+    "needs_auth": VIDEO_AVAILABILITY_AGE_RESTRICTED,
+    "private": VIDEO_AVAILABILITY_PRIVATE,
+    "unavailable": VIDEO_AVAILABILITY_UNAVAILABLE,
+}
+
+# Mapping from error categories detected in yt-dlp stderr to availability values
+ERROR_CATEGORY_TO_AVAILABILITY: dict[str, str] = {
+    "members_only": VIDEO_AVAILABILITY_MEMBERS_ONLY,
+    "private": VIDEO_AVAILABILITY_PRIVATE,
+    "unavailable": VIDEO_AVAILABILITY_UNAVAILABLE,
+    "geo_restricted": VIDEO_AVAILABILITY_GEO_RESTRICTED,
+    "age_restricted": VIDEO_AVAILABILITY_AGE_RESTRICTED,
+}

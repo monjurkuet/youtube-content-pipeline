@@ -22,6 +22,7 @@ from .schemas import ChannelDocument, VideoMetadataDocument
 from src.services.video_service import (
     get_pending_videos,
     get_failed_videos,
+    get_restricted_videos,
     reset_failed_transcription,
     mark_video_transcribed,
 )
@@ -185,7 +186,7 @@ def sync_channel(
                     published_at=video.published_at,
                     availability=video.availability,
                 )
-                
+
                 # Check if exists
                 existing = await db.video_metadata.find_one({"video_id": video.video_id})
                 if existing:
@@ -193,7 +194,7 @@ def sync_channel(
                 else:
                     await db.save_video_metadata(video_doc)
                     new_count += 1
-            
+
             return new_count, existing_count
 
     new_count, exist_count = _run_async(_save())
@@ -305,17 +306,23 @@ async def _fetch_new_videos_only_async(
                         except ValueError:
                             pass
                     
-                    videos.append(VideoMetadata(
-                        video_id=data.get("id", ""),
-                        title=data.get("title", ""),
-                        description=data.get("description", ""),
-                        channel_id=channel_id,
-                        channel_title=data.get("channel", ""),
-                        thumbnail_url=data.get("thumbnail", ""),
-                        duration_seconds=data.get("duration"),
-                        view_count=data.get("view_count"),
-                        published_at=published_at,
-                    ))
+                        # Extract availability from yt-dlp simulate data
+                        from src.core.constants import YTDLP_AVAILABILITY_MAP
+                        raw_availability = data.get("availability", "unknown") or "unknown"
+                        availability = YTDLP_AVAILABILITY_MAP.get(raw_availability, "unknown")
+
+                        videos.append(VideoMetadata(
+                            video_id=data.get("id", ""),
+                            title=data.get("title", ""),
+                            description=data.get("description", ""),
+                            channel_id=channel_id,
+                            channel_title=data.get("channel", ""),
+                            thumbnail_url=data.get("thumbnail", ""),
+                            duration_seconds=data.get("duration"),
+                            view_count=data.get("view_count"),
+                            published_at=published_at,
+                            availability=availability,
+                        ))
             except Exception as e:
                 console.print(f"[yellow]   Warning: failed to fetch {video_id}: {e}[/yellow]")
                 continue
