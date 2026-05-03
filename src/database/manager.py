@@ -530,6 +530,64 @@ class MongoDBManager:
 
         return await self.video_metadata.count_documents(query)
 
+    async def mark_video_availability(
+        self,
+        video_id: str,
+        availability: str,
+    ) -> bool:
+        """Update the availability field for a video.
+
+        Args:
+            video_id: Video identifier
+            availability: New availability value (e.g. 'members_only', 'private')
+
+        Returns:
+            True if the document was modified
+        """
+        await self.initialize()
+        result = await self.video_metadata.update_one(
+            {"video_id": video_id},
+            {"$set": {"availability": availability}},
+        )
+        return result.modified_count > 0
+
+    async def get_restricted_videos(
+        self,
+        channel_id: str | None = None,
+        availability: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Get videos with permanent access restrictions.
+
+        Args:
+            channel_id: Optional channel ID filter
+            availability: Optional specific availability type to filter by
+            limit: Maximum results to return
+
+        Returns:
+            List of video metadata documents with permanent restrictions
+        """
+        from src.core.constants import PERMANENT_AVAILABILITY
+
+        await self.initialize()
+        if availability:
+            query: dict[str, Any] = {"availability": availability}
+        else:
+            query = {"availability": {"$in": list(PERMANENT_AVAILABILITY)}}
+
+        if channel_id:
+            query["channel_id"] = channel_id
+
+        cursor = self.video_metadata.find(query).sort("published_at", -1).limit(limit)
+
+        results = []
+        async for doc in cursor:
+            if "_id" in doc:
+                doc["_id"] = str(doc["_id"])
+            results.append(doc)
+
+        return results
+
 
 # Singleton instance for application-wide use (for backward compatibility)
 _db_manager: MongoDBManager | None = None

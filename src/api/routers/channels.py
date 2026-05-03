@@ -692,19 +692,10 @@ async def list_channel_restricted_videos(
         le=1000,
         description="Maximum results to return",
     ),
-    db: AsyncIOMotorDatabase = Depends(get_db),
     db_manager: MongoDBManager = Depends(get_db_manager_dep),
     auth_ctx=Depends(validate_api_key),
 ) -> list[dict[str, Any]]:
     """List restricted videos for a channel."""
-    # Check if channel exists
-    channel = await db.channels.find_one({"channel_id": channel_id})
-    if channel is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Channel {channel_id} not found",
-        )
-
     restricted = await db_manager.get_restricted_videos(
         channel_id=channel_id,
         availability=availability,
