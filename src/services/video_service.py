@@ -60,6 +60,28 @@ async def get_failed_videos(
         return [VideoMetadataDocument(**doc) for doc in docs]
 
 
+async def get_restricted_videos(
+    channel_id: str | None = None,
+    availability: str | None = None,
+    db_manager: MongoDBManager | None = None,
+) -> list[dict]:
+    """Get videos with permanent access restrictions.
+
+    Args:
+        channel_id: Optional channel ID to filter by.
+        availability: Optional specific availability type to filter by.
+        db_manager: Optional MongoDBManager instance to reuse.
+
+    Returns:
+        List of video metadata dicts with permanent restrictions.
+    """
+    async with db_manager or MongoDBManager() as db:
+        return await db.get_restricted_videos(
+            channel_id=channel_id,
+            availability=availability,
+        )
+
+
 async def reset_failed_transcription(
     video_id: str, db_manager: MongoDBManager | None = None
 ) -> bool:

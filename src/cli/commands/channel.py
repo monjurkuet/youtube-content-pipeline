@@ -732,24 +732,14 @@ def channel_retry_failed(
 
         rprint(f"\n[bold blue]Retrying failed transcriptions from {channel_handle}[/bold blue]\n")
 
-        # Get failed videos
-        failed = asyncio.run(get_failed_videos(channel_id))
+        # Get failed videos (skip permanently restricted at DB level when flag is set)
+        failed = asyncio.run(get_failed_videos(channel_id, skip_permanent_failures=skip_permanent))
 
         if not failed:
             rprint("[green]✓ No failed transcriptions to retry![/green]\n")
             return
 
-        # Filter categories
-        retryable_categories = {"temporary_block", "age_restricted", "unknown"}
-
-        if skip_permanent:
-            failed = [
-                v
-                for v in failed
-                if getattr(v, "transcript_error_category", None) in retryable_categories
-                or not getattr(v, "transcript_error_category", None)
-            ]
-
+        # Filter by specific error category if requested
         if category:
             failed = [
                 v for v in failed if getattr(v, "transcript_error_category", None) == category
