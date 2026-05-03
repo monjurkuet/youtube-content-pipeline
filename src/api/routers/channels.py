@@ -649,3 +649,65 @@ async def sync_all_channels(
         "total_channels": len(channels),
         "results": results,
     }
+
+
+@router.get(
+    "/{channel_id}/restricted",
+    response_model=list[dict[str, Any]],
+    summary="List restricted videos for a channel",
+    description="""
+    List videos with permanent access restrictions for a specific channel.
+
+    Returns videos tagged as members_only, private, geo_restricted, or unavailable.
+    These videos are automatically skipped during transcription.
+
+    **Filtering:**
+    - `availability`: Filter by a specific restriction type
+    - `limit`: Maximum results to return
+    """,
+    operation_id="list_channel_restricted_videos",
+    responses={
+        200: {
+            "description": "List of restricted videos",
+        },
+        404: {
+            "description": "Channel not found",
+        },
+    },
+)
+async def list_channel_restricted_videos(
+    channel_id: str = Path(
+        ...,
+        description="YouTube channel ID",
+        examples=["UCX6OQ3DkcsbYNE6H8uQQuVA"],
+    ),
+    availability: str | None = Query(
+        default=None,
+        description="Filter by specific availability type (members_only, private, geo_restricted, unavailable)",
+        examples=["members_only", "private"],
+    ),
+    limit: int = Query(
+        default=50,
+        ge=1,
+        le=1000,
+        description="Maximum results to return",
+    ),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    db_manager: MongoDBManager = Depends(get_db_manager_dep),
+    auth_ctx=Depends(validate_api_key),
+) -> list[dict[str, Any]]:
+    """List restricted videos for a channel."""
+    # Check if channel exists
+    channel = await db.channels.find_one({"channel_id": channel_id})
+    if channel is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Channel {channel_id} not found",
+        )
+
+    restricted = await db_manager.get_restricted_videos(
+        channel_id=channel_id,
+        availability=availability,
+        limit=limit,
+    )
+    return restricted
