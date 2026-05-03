@@ -141,6 +141,7 @@ def fetch_latest_from_rss(channel_id: str, limit: int = 15) -> list[VideoMetadat
                         published_at=published_at,
                         channel_id=channel_id,
                         channel_title=channel_title,
+                    availability="public",  # RSS feeds only contain public videos
                     )
                 )
 

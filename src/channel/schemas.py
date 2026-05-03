@@ -32,7 +32,6 @@ class VideoMetadataDocument(BaseModel):
     duration_seconds: int | None = None
     view_count: int | None = None
     published_at: datetime | None = None
-    availability: str = "unknown"
     transcript_status: Literal["pending", "completed", "failed"] = "pending"
     transcript_id: str | None = None
     transcript_error: str | None = None

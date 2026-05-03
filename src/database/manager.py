@@ -89,6 +89,7 @@ class MongoDBManager:
         await self.transcripts.create_index("created_at")
         await self.transcripts.create_index("transcript_source")
         await self.transcripts.create_index("language")
+        await self.transcripts.create_index("channel_id")
 
         # Channels collection
         await self.channels.create_index("channel_id", unique=True)

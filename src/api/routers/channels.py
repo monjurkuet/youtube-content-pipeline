@@ -702,3 +702,74 @@ async def list_channel_restricted_videos(
         limit=limit,
     )
     return restricted
+
+
+@router.get(
+    "/{channel_id}/transcripts",
+    response_model=list[dict[str, Any]],
+    summary="List transcripts for a channel",
+    description="""
+    List transcripts for a specific channel.
+
+    Returns transcript summaries (no segments) for all videos in the channel
+    that have been transcribed. Uses the `channel_id` field on the transcript
+    document for efficient querying.
+
+    **Pagination:**
+    - `limit`: Maximum number of results (default: 20, max: 200)
+    - `offset`: Number of results to skip (default: 0)
+
+    **Filtering:**
+    - `transcript_source`: Filter by source (youtube_api, groq_whisper, etc.)
+    """,
+    operation_id="list_channel_transcripts",
+    responses={
+        200: {
+            "description": "List of transcripts",
+        },
+    },
+)
+async def list_channel_transcripts(
+    channel_id: str = Path(
+        ...,
+        description="YouTube channel ID",
+        examples=["UCX6OQ3DkcsbYNE6H8uQQuVA"],
+    ),
+    limit: int = Query(
+        default=20,
+        ge=1,
+        le=200,
+        description="Maximum number of results to return",
+    ),
+    offset: int = Query(
+        default=0,
+        ge=0,
+        description="Number of results to skip",
+    ),
+    transcript_source: str | None = Query(
+        default=None,
+        description="Filter by transcript source",
+        examples=["youtube_api", "groq_whisper"],
+    ),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    auth_ctx=Depends(validate_api_key),
+) -> list[dict[str, Any]]:
+    """List transcripts for a channel."""
+    query: dict[str, Any] = {"channel_id": channel_id}
+    if transcript_source:
+        query["transcript_source"] = transcript_source
+
+    cursor = (
+        db.transcripts.find(query, {"segments": 0})
+        .sort("created_at", -1)
+        .skip(offset)
+        .limit(limit)
+    )
+
+    results = []
+    async for doc in cursor:
+        if "_id" in doc:
+            doc["_id"] = str(doc["_id"])
+        results.append(doc)
+
+    return results

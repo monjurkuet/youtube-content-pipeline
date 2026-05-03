@@ -190,39 +190,6 @@ ERROR_CODE_TO_STATUS = {
 }
 
 # =============================================================================
-# Video Availability Constants
-# =============================================================================
-
-# Availability values that indicate permanent restrictions
-PERMANENT_AVAILABILITY = frozenset(
-    {"private", "unavailable", "members_only", "premium_only", "subscriber_only"}
-)
-
-# yt-dlp availability field mapping to our internal values
-YTDLP_AVAILABILITY_MAP: dict[str, str] = {
-    "public": "public",
-    "private": "private",
-    "unavailable": "unavailable",
-    "members_only": "members_only",
-    "premium_only": "premium_only",
-    "subscriber_only": "subscriber_only",
-    "needs_auth": "needs_auth",
-    "unlisted": "unlisted",
-}
-
-# Map error_category to availability value
-ERROR_CATEGORY_TO_AVAILABILITY: dict[str, str] = {
-    "private": "private",
-    "unavailable": "unavailable",
-    "members_only": "members_only",
-    "premium_only": "premium_only",
-    "subscriber_only": "subscriber_only",
-    "geo_restricted": "geo_restricted",
-    "age_restricted": "age_restricted",
-}
-
-
-# =============================================================================
 # Time Constants
 # =============================================================================
 

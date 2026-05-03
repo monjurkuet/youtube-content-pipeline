@@ -81,6 +81,7 @@ class TranscriptDocument(BaseModel):
     source_type: Literal["youtube", "url", "local"]
     source_url: str | None = None
     title: str | None = None
+    channel_id: str | None = None
 
     # Transcript metadata
     transcript_source: Literal["youtube_api", "whisper", "groq_whisper", "local_service"]

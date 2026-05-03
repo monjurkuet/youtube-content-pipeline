@@ -1,5 +1,7 @@
 """Simple 2-step transcription pipeline: get transcript -> save to DB."""
 
+import asyncio
+import concurrent.futures
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -72,11 +74,11 @@ class TranscriptPipeline:
 
                 progress.update(task, completed=True)
                 console.print(
-                    f"   [green]✓[/green] Step 1 COMPLETE: "
+                    f" [green]✓[/green] Step 1 COMPLETE: "
                     f"{len(raw_transcript.segments)} segments from {raw_transcript.source}"
                 )
                 console.print(
-                    f"   [dim]   Transcript length: {len(raw_transcript.full_text)} chars[/dim]"
+                    f" [dim] Transcript length: {len(raw_transcript.full_text)} chars[/dim]"
                 )
 
                 # Create transcript document
@@ -96,38 +98,38 @@ class TranscriptPipeline:
 
                     progress.update(task, completed=True)
                     console.print(
-                        f"   [green]✓[/green] Step 2 COMPLETE: "
+                        f" [green]✓[/green] Step 2 COMPLETE: "
                         f"Saved to MongoDB (ID: {doc_id[:16]}...)"
                     )
                 else:
-                    console.print("   [dim]Step 2/2: Skipping database save[/dim]")
+                    console.print(" [dim]Step 2/2: Skipping database save[/dim]")
 
-            # Build result
-            completed_at = datetime.now(timezone.utc)
-            duration_seconds = (completed_at - started_at).total_seconds()
+                # Build result
+                completed_at = datetime.now(timezone.utc)
+                duration_seconds = (completed_at - started_at).total_seconds()
 
-            result = ProcessingResult(
-                video_id=source_id,
-                source_type=source_type,  # type: ignore
-                source_url=source if source_type in ("youtube", "url") else None,
-                transcript_source=raw_transcript.source,
-                segment_count=len(raw_transcript.segments),
-                duration_seconds=raw_transcript.duration,
-                total_text_length=len(raw_transcript.full_text),
-                language=raw_transcript.language,
-                started_at=started_at,
-                completed_at=completed_at,
-                duration_seconds_total=duration_seconds,
-                saved_to_db=save_to_db and self.settings.pipeline_save_to_db,
-                transcript_id=doc_id if (save_to_db and self.settings.pipeline_save_to_db) else None,
-            )
+                result = ProcessingResult(
+                    video_id=source_id,
+                    source_type=source_type,  # type: ignore
+                    source_url=source if source_type in ("youtube", "url") else None,
+                    transcript_source=raw_transcript.source,
+                    segment_count=len(raw_transcript.segments),
+                    duration_seconds=raw_transcript.duration,
+                    total_text_length=len(raw_transcript.full_text),
+                    language=raw_transcript.language,
+                    started_at=started_at,
+                    completed_at=completed_at,
+                    duration_seconds_total=duration_seconds,
+                    saved_to_db=save_to_db and self.settings.pipeline_save_to_db,
+                    transcript_id=doc_id if (save_to_db and self.settings.pipeline_save_to_db) else None,
+                )
 
-            console.print("\n[bold green]✅ Transcription complete![/bold green]")
-            console.print(f"   Duration: {duration_seconds:.1f}s")
-            console.print(f"   Segments: {len(raw_transcript.segments)}")
-            console.print(f"   Source: {raw_transcript.source}\n")
+                console.print("\n[bold green]✅ Transcription complete![/bold green]")
+                console.print(f" Duration: {duration_seconds:.1f}s")
+                console.print(f" Segments: {len(raw_transcript.segments)}")
+                console.print(f" Source: {raw_transcript.source}\n")
 
-            return result
+                return result
 
         except TranscriptionFailureError:
             raise
@@ -184,40 +186,45 @@ class TranscriptPipeline:
         """Get transcript from source."""
         return self.transcription.get_transcript(source_id, source_type)
 
-    def save_transcript_document(self, transcript_doc: TranscriptDocument) -> str:
-        """Save transcript to MongoDB.
+    @staticmethod
+    async def save_transcript_document_async(transcript_doc: TranscriptDocument) -> str:
+        """Save transcript to MongoDB (async-native).
 
-        Runs async database operations in sync context.
-        Uses a separate thread with its own event loop to avoid conflicts.
+        This is the canonical implementation — no thread-pool hacks.
         """
-        import asyncio
-        import concurrent.futures
+        from src.database import MongoDBManager
 
-        async def _save() -> str:
-            from src.database import MongoDBManager
+        async with MongoDBManager() as db:
+            # Populate channel_id from video metadata if missing
+            if not transcript_doc.channel_id:
+                try:
+                    video = await db.video_metadata.find_one(
+                        {"video_id": transcript_doc.video_id},
+                        {"channel_id": 1},
+                    )
+                    if video and video.get("channel_id"):
+                        transcript_doc.channel_id = video["channel_id"]
+                except Exception:
+                    pass  # Non-critical — channel_id will be None
 
-            # Use context manager for proper lifecycle management
-            async with MongoDBManager() as db:
-                doc_id = await db.save_transcript(transcript_doc)
-                if transcript_doc.source_type == "youtube":
-                    await db.mark_transcript_completed(transcript_doc.video_id, doc_id)
-                return doc_id
+            doc_id = await db.save_transcript(transcript_doc)
+            if transcript_doc.source_type == "youtube":
+                await db.mark_transcript_completed(transcript_doc.video_id, doc_id)
+            return doc_id
 
-        def _run_in_thread() -> str:
-            # Each thread gets its own event loop with asyncio.run()
-            return asyncio.run(_save())
+    def save_transcript_document(self, transcript_doc: TranscriptDocument) -> str:
+        """Save transcript to MongoDB (sync wrapper for CLI usage).
 
+        Delegates to save_transcript_document_async via asyncio.run().
+        """
         try:
-            # Run async DB operation in a separate thread to avoid event loop conflicts
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_run_in_thread)
-                doc_id = future.result()
-                console.print(f"   [green]✓ Database: Saved with ID {doc_id[:16]}...[/green]")
-                return doc_id
+            doc_id = asyncio.run(self.save_transcript_document_async(transcript_doc))
+            console.print(f" [green]✓ Database: Saved with ID {doc_id[:16]}...[/green]")
+            return doc_id
         except TranscriptionFailureError:
             raise
         except Exception as e:
-            console.print(f"   [red]✗ Database: Save failed: {e}[/red]")
+            console.print(f" [red]✗ Database: Save failed: {e}[/red]")
             raise TranscriptionFailureError(
                 create_failure(
                     f"Database save failed: {e}",
