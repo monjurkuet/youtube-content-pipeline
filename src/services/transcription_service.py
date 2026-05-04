@@ -156,10 +156,17 @@ async def _mark_youtube_job_failed(video_id: str, failure: TranscriptionFailure)
     """Persist a terminal YouTube failure onto video metadata when possible."""
     try:
         async with MongoDBManager() as db:
+            # Fetch current failure count for escalation decisions
+            video_doc = await db.video_metadata.find_one(
+                {"video_id": video_id},
+                {"transcript_failure_count": 1},
+            )
+            current_count = (video_doc or {}).get("transcript_failure_count", 0) or 0
             await db.mark_transcript_failed(
                 video_id,
                 failure.message,
                 failure.category,
+                current_failure_count=current_count,
             )
     except Exception as exc:
         logger.warning(

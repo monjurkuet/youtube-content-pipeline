@@ -12,7 +12,11 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
 from src.core.config import get_settings
 from src.core.schemas import TranscriptDocument
-from src.core.constants import ERROR_CATEGORY_TO_AVAILABILITY
+from src.core.constants import (
+    ERROR_CATEGORY_TO_AVAILABILITY,
+    MAX_RETRIES_BEFORE_PERMANENT,
+    ESCALABLE_FAILURE_CATEGORIES,
+)
 from src.transcription.failures import PERMANENT_FAILURE_CATEGORIES
 
 
@@ -103,6 +107,10 @@ class MongoDBManager:
         await self.video_metadata.create_index("published_at")
         await self.video_metadata.create_index("availability")
         await self.video_metadata.create_index("transcript_error_category")
+        await self.video_metadata.create_index("transcript_failure_count")
+        await self.video_metadata.create_index(
+            [("transcript_status", 1), ("transcript_error_category", 1), ("availability", 1)]
+        )
 
     async def save_transcript(self, transcript_doc: TranscriptDocument) -> str:
         """Save transcript to MongoDB.
@@ -432,6 +440,10 @@ class MongoDBManager:
         if skip_permanent_failures:
             query["transcript_error_category"] = {
                 "$nin": list(PERMANENT_FAILURE_CATEGORIES)
+            }
+            from src.core.constants import PERMANENT_AVAILABILITY
+            query["availability"] = {
+                "$nin": list(PERMANENT_AVAILABILITY)
             }
 
         cursor = self.video_metadata.find(query).sort("published_at", -1).limit(limit)

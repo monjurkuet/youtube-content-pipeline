@@ -702,7 +702,10 @@ def channel_retry_failed(
                         failures += 1
 
                     async with MongoDBManager() as db:
-                        await db.mark_transcript_failed(video.video_id, error_msg, fail_category)
+                        await db.mark_transcript_failed(
+                    video.video_id, error_msg, fail_category,
+                    current_failure_count=getattr(video, 'transcript_failure_count', 0) or 0,
+                )
 
         asyncio.run(process_all())
 

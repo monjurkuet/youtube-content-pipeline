@@ -79,6 +79,7 @@ class TestBackgroundProcessing:
         mock_pipeline.acquire_transcript.side_effect = TranscriptionFailureError(failure)
 
         mock_db = AsyncMock()
+        mock_db.video_metadata.find_one = AsyncMock(return_value={"transcript_failure_count": 0})
         mock_manager = AsyncMock()
         mock_manager.__aenter__.return_value = mock_db
         mock_manager.__aexit__.return_value = None
@@ -116,6 +117,7 @@ class TestBackgroundProcessing:
             "dQw4w9WgXcQ",
             "Temporary YouTube block",
             "temporary_block",
+            current_failure_count=0,
         )
 
     @pytest.mark.asyncio
@@ -146,6 +148,7 @@ class TestBackgroundProcessing:
         mock_pipeline.acquire_transcript.side_effect = TranscriptionFailureError(failure)
 
         mock_db = AsyncMock()
+        mock_db.video_metadata.find_one = AsyncMock(return_value={"transcript_failure_count": 0})
         mock_manager = AsyncMock()
         mock_manager.__aenter__.return_value = mock_db
         mock_manager.__aexit__.return_value = None

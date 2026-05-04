@@ -183,7 +183,7 @@ class YouTubeDownloader:
             return "Age-restricted", "age_restricted"
         elif "geo" in error_msg or "country" in error_msg or "not available in your region" in error_msg:
             return "Geo-restricted", "geo_restricted"
-        elif "403" in error_msg and "forbidden" in error_msg:
+        elif "403" in error_msg or "forbidden" in error_msg or "sign in to confirm" in error_msg:
             return "Access forbidden (likely temporary IP block)", "temporary_block"
         else:
             return f"Video error: {error_detail[:50]}", "unknown"

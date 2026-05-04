@@ -296,6 +296,17 @@ PERMANENT_FAILURE_CATEGORIES = frozenset({
     "geo_restricted",
 })
 
+# Categories that are retryable but should be escalated to permanent
+# after MAX_RETRIES_BEFORE_PERMANENT consecutive failures.
+ESCALABLE_FAILURE_CATEGORIES: frozenset[str] = frozenset({
+    "temporary_block",
+    "unknown",
+})
+
+# Maximum number of consecutive failures before a retryable category
+# is automatically escalated to "unavailable" (permanent).
+MAX_RETRIES_BEFORE_PERMANENT = 3
+
 # Mapping from yt-dlp availability strings to our normalized values
 YTDLP_AVAILABILITY_MAP: dict[str, str] = {
     "public": VIDEO_AVAILABILITY_PUBLIC,
