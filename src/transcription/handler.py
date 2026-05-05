@@ -3,8 +3,6 @@
 import logging
 from pathlib import Path
 
-from rich.console import Console
-
 from src.core.config import get_settings_with_yaml
 from src.core.exceptions import TranscriptionFailureError, WhisperError
 from src.core.schemas import RawTranscript
@@ -12,10 +10,9 @@ from src.core.schemas import RawTranscript
 from src.transcription.failures import create_failure, failure_from_exception
 from src.video.cookie_manager import get_cookie_manager
 from src.transcription.youtube_api import YouTubeAPIProvider
-from src.transcription.youtube_downloader import YouTubeDownloader, ErrorCategory
+from src.transcription.youtube_downloader import YouTubeDownloader
 from src.transcription.whisper_provider import WhisperProvider
 
-console = Console()
 logger = logging.getLogger(__name__)
 
 
@@ -143,19 +140,6 @@ class TranscriptionHandler:
                     retryable=False,
                 )
             ) from e
-
-    # Aliases for compatibility if needed
-    def _check_video_availability(self, video_id: str) -> tuple[bool, str, ErrorCategory]:
-        return self.youtube_downloader.check_video_availability(video_id)
-
-    def _classify_error(self, error_detail: str) -> tuple[str, ErrorCategory]:
-        return self.youtube_downloader.classify_error(error_detail)
-
-    def _download_youtube_audio(self, video_id: str) -> Path:
-        return self.youtube_downloader.download_audio(video_id)
-
-    def _transcribe_with_whisper(self, audio_path: str) -> RawTranscript:
-        return self.whisper_provider.transcribe(audio_path)
 
 
 def identify_source_type(source: str) -> tuple[str, str]:

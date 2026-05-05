@@ -18,6 +18,7 @@ def mock_settings():
     settings.groq_chunk_duration = 600
     settings.groq_chunk_overlap = 5
     settings.groq_max_file_size_mb = 25
+    settings.groq_max_429_retries = 3
     return settings
 
 

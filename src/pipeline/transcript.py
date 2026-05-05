@@ -1,7 +1,6 @@
 """Simple 2-step transcription pipeline: get transcript -> save to DB."""
 
 import asyncio
-import concurrent.futures
 from datetime import datetime, timezone
 from pathlib import Path
 

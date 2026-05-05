@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     transcript_service_poll_interval_sec: float = 2.0
     transcript_service_timeout_sec: int = 300
 
+    # whisper.cpp local server
+    whispercpp_base_url: str = "http://localhost:8334"
+    whispercpp_timeout_sec: int = 600  # Local inference can be slow on long files
+
+    # Groq retry (429 rate-limit)
+    groq_max_429_retries: int = 3
+
     # Pipeline Settings
     pipeline_work_dir: str = "/tmp/transcription_pipeline"
     pipeline_cache_dir: str = "/tmp/transcription_cache"
@@ -262,6 +269,16 @@ def apply_yaml_config(settings: Settings, config: dict[str, Any]) -> Settings:
             settings.groq_chunk_overlap = int(groq["chunk_overlap"])
         if "max_file_size_mb" in groq and settings.groq_max_file_size_mb == 25:
             settings.groq_max_file_size_mb = int(groq["max_file_size_mb"])
+        if "max_429_retries" in groq and settings.groq_max_429_retries == 3:
+            settings.groq_max_429_retries = int(groq["max_429_retries"])
+
+    # whisper.cpp
+    if "whispercpp" in config:
+        wcpp = config["whispercpp"]
+        if "base_url" in wcpp and settings.whispercpp_base_url == "http://localhost:8334":
+            settings.whispercpp_base_url = wcpp["base_url"]
+        if "timeout_sec" in wcpp and settings.whispercpp_timeout_sec == 600:
+            settings.whispercpp_timeout_sec = int(wcpp["timeout_sec"])
 
     # Pipeline
     if "pipeline" in config:

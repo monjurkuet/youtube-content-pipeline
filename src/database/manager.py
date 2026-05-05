@@ -14,8 +14,6 @@ from src.core.config import get_settings
 from src.core.schemas import TranscriptDocument
 from src.core.constants import (
     ERROR_CATEGORY_TO_AVAILABILITY,
-    MAX_RETRIES_BEFORE_PERMANENT,
-    ESCALABLE_FAILURE_CATEGORIES,
 )
 from src.transcription.failures import PERMANENT_FAILURE_CATEGORIES
 

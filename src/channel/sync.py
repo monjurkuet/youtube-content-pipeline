@@ -2,30 +2,24 @@
 
 import asyncio
 import logging
-import time
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
 
 from rich.console import Console
 
-from src.core.config import get_settings_with_yaml
 from src.core.schemas import SyncResult
 from src.database.manager import MongoDBManager
+from src.services.video_service import (
+    get_failed_videos,
+    get_pending_videos,
+    get_restricted_videos,
+    mark_video_transcribed,
+    reset_failed_transcription,
+)
 from src.video.cookie_manager import get_cookie_manager
 
 from .feed_fetcher import fetch_videos, _get_cookie_manager
 from .resolver import resolve_channel_handle
 from .schemas import ChannelDocument, VideoMetadataDocument
-
-# Re-export for compatibility
-from src.services.video_service import (
-    get_pending_videos,
-    get_failed_videos,
-    get_restricted_videos,
-    reset_failed_transcription,
-    mark_video_transcribed,
-)
 
 console = Console()
 logger = logging.getLogger(__name__)

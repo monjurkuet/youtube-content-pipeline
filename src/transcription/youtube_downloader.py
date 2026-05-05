@@ -1,6 +1,5 @@
 """YouTube video downloader using yt-dlp with cookie management and fallbacks."""
 
-import json
 import logging
 import os
 import shutil
@@ -10,13 +9,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from rich.console import Console
-
 from src.core.exceptions import TranscriptionFailureError
 from src.transcription.failures import create_failure
 from src.video.cookie_manager import get_cookie_manager
 
-console = Console()
 logger = logging.getLogger(__name__)
 
 ErrorCategory = Literal[
@@ -109,64 +105,6 @@ class YouTubeDownloader:
         self.work_dir = work_dir
         self.cookie_manager = cookie_manager or get_cookie_manager()
 
-    def check_video_availability(self, video_id: str) -> tuple[bool, str, ErrorCategory]:
-        """Check if video is available for transcription using yt-dlp.
-
-        Uses --dump-json without --flat-playlist to get video metadata.
-        --flat-playlist can cause "Requested format is not available" errors
-        and produces huge JSON output that causes timeouts.
-        """
-        try:
-            cmd = [
-                "yt-dlp",
-                "--dump-json",
-                "--no-warnings",
-                "--quiet",
-                "--no-download",
-                "-f", "bestaudio/best",
-                f"https://www.youtube.com/watch?v={video_id}",
-            ]
-            # Note: No cookies - video metadata is public
-
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-
-            if result.returncode != 0:
-                error_detail = result.stderr.strip()
-                return False, *self.classify_error(error_detail)
-
-            if not result.stdout.strip():
-                return False, "No video metadata", "unavailable"
-
-            data = json.loads(result.stdout.strip())
-
-            # Check for live stream
-            live_status = data.get("live_status")
-            if live_status in ["is_live", "is_upcoming", "post_live"]:
-                return False, f"Live stream ({live_status})", "live_stream"
-
-            # Check availability
-            availability = data.get("availability")
-            if availability == "private":
-                return False, "Video is private", "private"
-            elif availability == "unavailable":
-                return False, "Video unavailable", "unavailable"
-            elif availability == "members_only":
-                return False, "Members-only video", "members_only"
-            elif availability == "premium_only":
-                return False, "Premium-only video", "premium_only"
-            elif availability == "subscriber_only":
-                return False, "Subscriber-only video", "subscriber_only"
-
-            if not data.get("title"):
-                return False, "Missing video title", "unavailable"
-
-            return True, "Available", "unknown"
-
-        except subprocess.TimeoutExpired:
-            return False, "Timeout checking video", "timeout"
-        except Exception as e:
-            return False, f"Check failed: {str(e)[:50]}", "unknown"
-
     def classify_error(self, error_detail: str) -> tuple[str, ErrorCategory]:
         """Classify yt-dlp error into structured categories."""
         error_msg = error_detail.lower()
@@ -189,19 +127,13 @@ class YouTubeDownloader:
             return f"Video error: {error_detail[:50]}", "unknown"
 
     def download_audio(self, video_id: str) -> Path:
-        """Download audio from YouTube video."""
-        # Pre-flight check
-        is_available, reason, error_category = self.check_video_availability(video_id)
-        if not is_available:
-            raise TranscriptionFailureError(
-                create_failure(
-                    f"Pre-flight check failed: {reason}",
-                    error_category,
-                    "download",
-                    video_id=video_id,
-                )
-            )
+        """Download audio from YouTube video.
 
+        Note: The pre-flight check (check_video_availability) was removed because
+        it was blocking 348+ videos with false "Sign in to confirm" failures from
+        cloud IPs. The download loop below already handles error classification
+        and retry logic, making the pre-flight redundant and harmful.
+        """
         output_path = self.work_dir / f"{video_id}_audio.mp3"
         url = f"https://www.youtube.com/watch?v={video_id}"
 

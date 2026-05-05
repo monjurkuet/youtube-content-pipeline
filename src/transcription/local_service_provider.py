@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 class LocalTranscriptServiceProvider:
     """Transcription provider backed by the local transcript service."""
 
+    name = "local_transcript_service"
+
     def __init__(self, settings=None):
         self.settings = settings or get_settings_with_yaml()
         self.base_url = self.settings.transcript_service_base_url.rstrip("/")

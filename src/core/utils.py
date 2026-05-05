@@ -39,7 +39,6 @@ def download_remote_file(url: str, work_dir: Path) -> Path:
     """Download a remote file to the work directory."""
     import httpx
     import hashlib
-    from pathlib import Path
 
     file_hash = hashlib.md5(url.encode()).hexdigest()[:12]
     # Try to guess extension from URL

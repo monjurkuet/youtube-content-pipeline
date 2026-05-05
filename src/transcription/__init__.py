@@ -1,8 +1,5 @@
-"""Transcription package."""
+"""Transcription providers for the YouTube content pipeline."""
 
-from src.transcription.handler import TranscriptionHandler, identify_source_type
+from src.transcription.whisper_provider import WhisperProvider
 
-__all__ = [
-    "TranscriptionHandler",
-    "identify_source_type",
-]
+__all__ = ["WhisperProvider"]
