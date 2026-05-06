@@ -110,3 +110,25 @@ sudo rm -f /opt/monitoring/data/prometheus/lock
 - **Auto-Cleanup**: Script clears ports before starting
 - **Graceful Shutdown**: Services are properly stopped
 - **Configuration**: All ports configurable via `ports.yaml`
+
+### CDP Cookie Extractor
+
+Standalone CLI for extracting YouTube auth cookies from Chrome instances via Chrome DevTools Protocol.
+
+```bash
+# Check available auth cookies (no write)
+python scripts/cdp_cookie_extractor.py --dry-run
+
+# Extract and write to yt-dlp cookies file
+python scripts/cdp_cookie_extractor.py --output ~/.config/yt-dlp/cookies.txt
+
+# Use specific Chrome CDP port
+python scripts/cdp_cookie_extractor.py --port 9222
+
+# Output as cookie header string (for API injection)
+python scripts/cdp_cookie_extractor.py --format string
+```
+
+**When to use:** Before transcription batches if YouTube API returns IP-block/403 errors. Also via cron before scheduled transcription runs.
+
+**Prerequisites:** Chrome must be running with `--remote-debugging-port` enabled and logged into YouTube.

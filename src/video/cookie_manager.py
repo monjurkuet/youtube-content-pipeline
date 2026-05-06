@@ -167,16 +167,160 @@ class YouTubeCookieManager:
         logger.info(f"Found {len(profiles)} Chrome profile(s)")
         return profiles
 
+    def _extract_cookies_cdp(self, ports: list[int] | None = None) -> bool:
+        """Extract cookies from Chrome via CDP (Chrome DevTools Protocol).
+
+        Uses Storage.getCookies to pull all cookies from actively logged-in
+        Chrome instances on remote debugging ports. More reliable than
+        browser_cookie3 on WSL where Chrome runs on the Windows host.
+        """
+        if ports is None:
+            ports = [9222, 9224, 9225]
+
+        try:
+            import asyncio
+            import json as _json
+            import urllib.request
+
+            import websockets
+        except ImportError:
+            logger.debug("websockets not available for CDP extraction")
+            return False
+
+        try:
+            async def _extract():
+                all_cookies = {}
+                for port in ports:
+                    try:
+                        url = f"http://localhost:{port}/json/version"
+                        req = urllib.request.Request(url)
+                        with urllib.request.urlopen(req, timeout=5) as resp:
+                            data = _json.loads(resp.read())
+                        ws_url = data.get("webSocketDebuggerUrl")
+                        if not ws_url:
+                            continue
+
+                        async with websockets.connect(ws_url, max_size=10 * 1024 * 1024) as ws:
+                            await ws.send(_json.dumps({"id": 1, "method": "Storage.getCookies"}))
+                            r = _json.loads(await ws.recv())
+                            cookies = r.get("result", {}).get("cookies", [])
+                            logger.info(f"CDP port {port}: extracted {len(cookies)} cookies")
+
+                            for c in cookies:
+                                key = f"{c.get('domain', '')}:{c.get('name', '')}:{c.get('path', '/')}"
+                                existing = all_cookies.get(key)
+                                if existing is None or c.get("expires", -1) > existing.get("expires", -1):
+                                    all_cookies[key] = c
+                    except Exception as e:
+                        logger.debug(f"CDP port {port} failed: {e}")
+                        continue
+                return list(all_cookies.values())
+
+            cookies = asyncio.run(_extract())
+            if not cookies:
+                logger.info("CDP: no cookies extracted from any port")
+                return False
+
+            # Filter for YouTube/Google relevant domains
+            yt_relevant_domains = {
+                ".youtube.com", "www.youtube.com", "youtube.com",
+                ".google.com", "www.google.com", "google.com",
+                "accounts.google.com", ".accounts.google.com",
+                ".googleapis.com", ".googlevideo.com",
+                ".gstatic.com", ".ytimg.com",
+            }
+
+            def _is_relevant(domain):
+                d = domain.lower().lstrip(".")
+                for r in yt_relevant_domains:
+                    rl = r.lower().lstrip(".")
+                    if d == rl or d.endswith(rl):
+                        return True
+                return False
+
+            yt_cookies = [c for c in cookies if _is_relevant(c.get("domain", ""))]
+
+            # Check auth cookies
+            important = [
+                "LOGIN_INFO", "SSID", "APISID", "SAPISID", "HSID",
+                "__Secure-1PSID", "__Secure-3PSID", "__Secure-1PSIDTS",
+                "__Secure-3PSIDTS", "__Secure-1PAPISID", "__Secure-3PAPISID",
+            ]
+            found_auth = [c["name"] for c in yt_cookies if c["name"] in important]
+
+            if not found_auth:
+                logger.info("CDP: no auth cookies found, falling back to browser_cookie3")
+                return False
+
+            # Write in Netscape/Mozilla cookies.txt format
+            self.cookie_file.parent.mkdir(parents=True, exist_ok=True)
+            lines = [
+                "# Netscape HTTP Cookie File",
+                "# https://curl.se/docs/http-cookies.html",
+                "# This is a generated file! Do not edit.",
+                "",
+            ]
+            for c in sorted(yt_cookies, key=lambda x: (x.get("domain", ""), x.get("name", ""))):
+                domain = c.get("domain", "")
+                include_sub = "TRUE" if domain.startswith(".") else "FALSE"
+                path = c.get("path", "/")
+                secure = "TRUE" if c.get("secure", False) else "FALSE"
+                expires = c.get("expires", -1)
+                if expires == -1:
+                    expires = int(datetime.now().timestamp()) + 86400 * 365
+                else:
+                    expires = int(expires)
+                lines.append(f"{domain}\t{include_sub}\t{path}\t{secure}\t{expires}\t{c['name']}\t{c['value']}")
+
+            self.cookie_file.write_text("\n".join(lines) + "\n")
+
+            youtube_count = len([c for c in yt_cookies if "youtube" in c.get("domain", "")])
+            google_count = len([c for c in yt_cookies if "google" in c.get("domain", "")])
+
+            metadata = {
+                "extracted_at": datetime.now().isoformat(),
+                "source": "cdp",
+                "ports": ports,
+                "youtube_count": youtube_count,
+                "google_count": google_count,
+                "auth_cookies": found_auth,
+                "has_auth": True,
+                "total_cookies": len(yt_cookies),
+            }
+            self._save_metadata(metadata)
+
+            logger.info(f"CDP: saved {len(yt_cookies)} YouTube/Google cookies ({len(found_auth)} auth types)")
+            console.print(f"[green] \u2713 CDP: Extracted {len(yt_cookies)} cookies ({len(found_auth)} auth types) from ports {ports}[/green]")
+            return True
+
+        except Exception as e:
+            logger.warning(f"CDP cookie extraction failed: {e}")
+            return False
+
     def _extract_cookies(self) -> bool:
-        """Extract cookies from Chrome and save."""
+        """Extract cookies from Chrome and save.
+
+        Strategy: Try CDP first (fresh cookies from running Chrome on Windows host),
+        then fall back to browser_cookie3 (local Chrome SQLite databases).
+        """
+        # Ensure directory exists
+        self.cookie_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # Try CDP extraction first (works with Chrome on Windows host via WSL)
+        try:
+            cdp_success = self._extract_cookies_cdp()
+            if cdp_success:
+                return True
+            logger.info("CDP extraction didn't yield auth cookies, trying browser_cookie3...")
+        except Exception as e:
+            logger.debug(f"CDP extraction error: {e}")
+
+        # Fall back to browser_cookie3
         try:
             # Import here to avoid dependency issues
             from http.cookiejar import MozillaCookieJar
 
             import browser_cookie3
-
-            # Ensure directory exists
-            self.cookie_file.parent.mkdir(parents=True, exist_ok=True)
 
             # Get available Chrome profiles
             profiles = self._get_chrome_profiles()

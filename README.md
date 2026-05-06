@@ -7,10 +7,11 @@ A production-grade API for YouTube video transcription and transcript management
 ### Core Features
 - **Simple 2-Step Pipeline**: Get transcript → Save to MongoDB
 - **Automatic Fallback**: YouTube API → Whisper transcription
-- **Auto Cookie Management**: Extracts cookies from Chrome automatically
+- **CDP Cookie Extraction**: Pulls auth cookies from Chrome via DevTools Protocol to bypass IP blocks
+- **Auto Cookie Management**: Extracts cookies from Chrome automatically (CDP → browser_cookie3 fallback)
 - **Rate Limiting**: Configurable delays to prevent IP blocking (2-5s default)
 - **Retry Logic**: Exponential backoff for rate-limited requests
-- **YouTube API Cookie Support**: Passes browser cookies to API for less detectable requests
+- **YouTube API Cookie Auth**: Injects authenticated session (with CDP cookies) into YouTubeTranscriptApi
 - **Groq Whisper API**: Cloud-based transcription with automatic chunking
 
 ### API Features
@@ -51,6 +52,7 @@ uv sync
 - MongoDB (optional, for data storage)
 - Redis (optional, for caching and rate limiting)
 - Chrome browser (for cookie extraction)
+- Chrome with remote debugging enabled (for CDP cookie extraction — recommended)
 - Node.js or Deno (for YouTube JS challenges)
 
 ### Optional Dependencies
@@ -94,9 +96,14 @@ uv run python -m src.cli channel add-from-videos \
   --sync --sync-mode recent
 
 # Cookie management
-uv run python -m src.cli cookie status      # Check cookie status
-uv run python -m src.cli cookie extract      # Extract cookies from Chrome
-uv run python -m src.cli cookie invalidate    # Force re-extraction
+uv run python -m src.cli cookie status # Check cookie status
+uv run python -m src.cli cookie extract # Extract cookies from Chrome
+uv run python -m src.cli cookie invalidate # Force re-extraction
+
+# CDP cookie extraction (bypasses IP blocks with Chrome DevTools Protocol)
+python scripts/cdp_cookie_extractor.py --output ~/.config/yt-dlp/cookies.txt
+python scripts/cdp_cookie_extractor.py --port 9222 --dry-run  # Preview without writing
+python scripts/cdp_cookie_extractor.py --format string         # Output as cookie header
 
 # Utility commands
 uv run python -m src.cli utils check-dependencies  # Check yt-dlp, Bun, Deno
@@ -577,10 +584,12 @@ src/
 │   ├── handler.py             # Transcription with fallback
 │   ├── groq_provider.py       # Groq Whisper API provider
 │   ├── whisper_provider.py    # Whisper provider abstraction
-│   ├── youtube_api.py         # YouTube transcript API
+│ ├── youtube_api.py # YouTube transcript API (with CDP cookie auth)
 │   └── youtube_downloader.py  # yt-dlp integration
 ├── video/
-│   └── cookie_manager.py      # Browser cookie management
+│ └── cookie_manager.py # Browser cookie management (CDP + browser_cookie3)
+├── scripts/
+│ └── cdp_cookie_extractor.py # Standalone CDP cookie extraction CLI
 ├── database/
 │   ├── manager.py             # Database manager
 │   └── redis.py               # Redis integration
@@ -662,14 +671,52 @@ asyncio.run(db_operations())
 
 Cookies are automatically extracted from Chrome and used for:
 - YouTube video downloads (yt-dlp)
-- YouTube Transcript API requests (makes requests less detectable)
+- YouTube Transcript API requests (authenticated session bypasses IP blocks)
+
+### CDP Cookie Extraction (Primary Method)
+
+The pipeline uses **Chrome DevTools Protocol (CDP)** to extract cookies from actively logged-in Chrome instances. This is the most reliable method, especially on WSL where Chrome runs on the Windows host.
+
+**How it works:**
+1. Connects to Chrome's remote debugging port (default: 9222, 9224, 9225)
+2. Calls `Storage.getCookies` via WebSocket — gets ALL cookies including HttpOnly/Secure
+3. Filters for YouTube/Google auth cookies (LOGIN_INFO, __Secure-1PSID, etc.)
+4. Writes Netscape cookies.txt format for yt-dlp and injects into YouTubeTranscriptApi
+
+**Results:** ECKrown channel went from 72 failed videos (IP blocked) → 926/926 completed (100%). Speed: ~2s/video with cookies vs ~285s/video with Groq Whisper fallback.
+
+**Standalone CLI tool:**
+```bash
+# Extract cookies to default location
+python scripts/cdp_cookie_extractor.py
+
+# Specify custom port and output
+python scripts/cdp_cookie_extractor.py --port 9222 --output /tmp/cookies.txt
+
+# Preview cookies without writing (--dry-run)
+python scripts/cdp_cookie_extractor.py --dry-run
+
+# Output as cookie string (for API headers)
+python scripts/cdp_cookie_extractor.py --format string
+
+# Output as JSON
+python scripts/cdp_cookie_extractor.py --format json
+```
+
+### Extraction Strategy
+
+The cookie manager tries methods in order:
+1. **CDP** (primary) — Fresh cookies from running Chrome via DevTools Protocol
+2. **browser_cookie3** (fallback) — Reads local Chrome SQLite databases
+
+### CLI Commands
 
 ```bash
 # Check cookie status
-uv run python -m src.video.cookie_manager --status
+uv run python -m src.cli cookie status
 
 # Force re-extraction
-uv run python -m src.video.cookie_manager --invalidate
+uv run python -m src.cli cookie invalidate
 ```
 
 Cookies are cached for 24 hours by default (configurable in `config.yaml`).

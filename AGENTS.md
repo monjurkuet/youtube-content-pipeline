@@ -457,10 +457,25 @@ npx @modelcontextprotocol/inspector uv run python -m src.mcp.server
 
 ---
 
+## CDP Cookie Extraction
+
+YouTube blocks transcript API requests from cloud IPs with "Sign in to confirm" challenges. The fix extracts auth cookies from running Chrome instances via CDP.
+
+**Flow:** Chrome (CDP port) → `Storage.getCookies` → `CookieManager._extract_cookies_cdp()` → `YouTubeAPIProvider._create_authenticated_api()` → `YouTubeTranscriptApi(http_client=cookie_session)`
+
+**Key files:**
+- `scripts/cdp_cookie_extractor.py` — Standalone CLI (`--dry-run`, `--output`, `--port`, `--format`)
+- `src/video/cookie_manager.py` — `_extract_cookies_cdp()` tries CDP first, falls back to `browser_cookie3`
+- `src/transcription/youtube_api.py` — `_create_authenticated_api()` injects cookies via `requests.Session`
+
+**Impact:** Previously-blocked videos transcribe in ~2s (vs ~285s Groq Whisper fallback). ECKrown: 72 failed → 0 failed (100% coverage).
+
+
 ## Version History
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 0.6.0 | 2026-05 | CDP cookie extraction + YouTube API auth injection |
 | 0.5.0 | 2024-01 | Phase 4: Documentation and Prometheus |
 | 0.4.0 | 2024-01 | Phase 3: MCP Integration |
 | 0.3.0 | 2024-01 | Phase 2: Redis and Rate Limiting |

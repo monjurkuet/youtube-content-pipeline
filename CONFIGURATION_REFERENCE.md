@@ -91,6 +91,8 @@ Environment variables take precedence over YAML configuration.
 |----------|-------------|---------|----------|
 | `YOUTUBE_API_USE_COOKIES` | Use browser cookies | `true` | No |
 | `YOUTUBE_API_COOKIE_CACHE_HOURS` | Cookie cache duration | `24` | No |
+| `CDP_COOKIE_PORTS` | Chrome CDP ports (comma-separated) | `9222,9224,9225` | No |
+| `CDP_COOKIE_ENABLED` | Enable CDP cookie extraction | `true` | No |
 | `YOUTUBE_API_TIMEOUT` | Request timeout (seconds) | `30` | No |
 | `YOUTUBE_API_LANGUAGES` | Preferred languages | `["en", "en-US", "en-GB"]` | No |
 
@@ -125,6 +127,8 @@ rate_limiting:
 youtube_api:
   use_cookies: true     # Use browser cookies
   cookie_cache_hours: 24
+  cdp_cookie_enabled: true  # Extract cookies from Chrome via CDP
+  cdp_cookie_ports: "9222,9224,9225"  # Chrome remote debugging ports
   timeout: 30
   languages:
     - en
@@ -173,6 +177,8 @@ YouTube API configuration.
 |-----|------|---------|-------------|
 | `use_cookies` | boolean | `true` | Use browser cookies for requests |
 | `cookie_cache_hours` | integer | `24` | Cookie cache duration |
+| `cdp_cookie_enabled` | boolean | `true` | Use CDP to extract cookies from Chrome |
+| `cdp_cookie_ports` | string | `"9222,9224,9225"` | Chrome CDP ports |
 | `timeout` | integer | `30` | Request timeout (seconds) |
 | `languages` | array | `["en", "en-US", "en-GB"]` | Preferred languages |
 
