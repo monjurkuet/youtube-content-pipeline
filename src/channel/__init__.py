@@ -7,7 +7,9 @@ from .sync import (
     get_failed_videos,
     get_pending_videos,
     get_restricted_videos,
+    mark_video_transcription_failed,
     mark_video_transcribed,
+    requeue_retryable_failed,
     reset_failed_transcription,
     sync_channel,
 )
@@ -29,6 +31,8 @@ __all__ = [
     "get_failed_videos",
     "get_pending_videos",
     "get_restricted_videos",
+    "mark_video_transcription_failed",
     "mark_video_transcribed",
+    "requeue_retryable_failed",
     "reset_failed_transcription",
 ]

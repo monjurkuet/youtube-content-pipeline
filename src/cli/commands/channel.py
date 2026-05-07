@@ -3,7 +3,6 @@
 import asyncio
 from collections import Counter
 from datetime import datetime, timezone
-from typing import Any
 
 import typer
 from rich import print as rprint
@@ -342,35 +341,17 @@ def channel_videos(
 def _classify_error_category(error: Exception) -> str:
     """Classify an exception into an error category for structured tracking."""
     from src.core.exceptions import TranscriptionFailureError
+    from src.transcription.failures import classify_error_message
 
     if isinstance(error, TranscriptionFailureError) and error.failure:
         return error.failure.category
 
-    error_lower = str(error).lower()
-    if "geo" in error_lower or "country" in error_lower or "not available in your region" in error_lower:
-        return "geo_restricted"
-    if "members-only" in error_lower or "join this channel" in error_lower:
-        return "members_only"
-    if "private" in error_lower:
-        return "private"
-    if "unavailable" in error_lower or "not available" in error_lower:
-        return "unavailable"
-    if "age" in error_lower and "restrict" in error_lower:
-        return "age_restricted"
-    if "live event" in error_lower or "upcoming" in error_lower or "is_live" in error_lower:
-        return "live_stream"
-    if "403" in error_lower or "forbidden" in error_lower or "sign in to confirm" in error_lower:
-        return "temporary_block"
-    if "timeout" in error_lower or "timed out" in error_lower:
-        return "timeout"
-    if "rate" in error_lower or "429" in error_lower:
-        return "remote_service"
-    return "unknown"
+    return classify_error_message(str(error))
 
 
 def _is_permanent_category(category: str) -> bool:
     """Check if an error category represents a permanent failure."""
-    from src.core.constants import PERMANENT_FAILURE_CATEGORIES
+    from src.transcription.failures import PERMANENT_FAILURE_CATEGORIES
     return category in PERMANENT_FAILURE_CATEGORIES
 
 
@@ -393,20 +374,28 @@ def channel_transcribe_pending(
         "--include-restricted",
         help="Include permanently restricted videos (members-only, private, etc.)",
     ),
+    include_retryable_failed: bool = typer.Option(
+        False,
+        "--include-retryable-failed",
+        help="Requeue retryable failed videos before processing pending",
+    ),
 ):
     """Transcribe pending videos from channel.
 
     Batch size defaults to config.yaml setting (default: 5).
     Videos are processed sequentially with rate limiting delays.
     Use --all to transcribe all pending videos.
+    Use --include-retryable-failed to automatically requeue transient
+    failures before processing pending videos.
 
     The redundant pre-transcription availability check has been removed.
     The TranscriptionHandler already checks availability during download
     and raises TranscriptionFailureError with proper categories.
     """
-    from src.channel.sync import get_pending_videos
+    from src.channel.sync import get_pending_videos, mark_video_transcribed, requeue_retryable_failed
     from src.core.config import get_settings_with_yaml
     from src.pipeline import get_transcript
+    from src.services.video_service import mark_video_transcription_failed
 
     settings = get_settings_with_yaml()
 
@@ -423,7 +412,17 @@ def channel_transcribe_pending(
 
         rprint(f"\n[bold blue]Transcribing pending videos from {channel_handle}[/bold blue]\n")
 
-        pending = asyncio.run(get_pending_videos(channel_id, skip_permanent_failures=not include_restricted))
+        requeued_count = 0
+        if include_retryable_failed:
+            requeued_count = asyncio.run(requeue_retryable_failed(channel_id))
+            if requeued_count > 0:
+                rprint(f"[yellow]Requeued {requeued_count} retryable-failed video(s)[/yellow]\n")
+
+        pending = asyncio.run(
+            get_pending_videos(
+                channel_id, skip_permanent_failures=not include_restricted
+            )
+        )
 
         if not pending:
             rprint("[green]✓ No pending videos to transcribe![/green]\n")
@@ -497,10 +496,7 @@ def channel_transcribe_pending(
                                     await asyncio.sleep(0.5 * (attempt + 1))
 
                         if transcript:
-                            async with MongoDBManager() as db:
-                                await db.mark_transcript_completed(
-                                    video.video_id, transcript["_id"]
-                                )
+                            await mark_video_transcribed(video.video_id, transcript["_id"])
                             rprint(" [green]✓ Transcribed and marked complete[/green]")
                             successes += 1
                         else:
@@ -521,15 +517,18 @@ def channel_transcribe_pending(
                             rprint(f" [red]✗ Error ({category})[/red]: {escape(error_msg)}")
                             failures += 1
 
-                        async with MongoDBManager() as db:
-                            await db.mark_transcript_failed(
-                                video.video_id, error_msg, error_category=category
-                            )
+                        await mark_video_transcription_failed(
+                            video.video_id,
+                            error_msg,
+                            category,
+                        )
 
         asyncio.run(process_all())
 
         # Summary with structured error categories
         rprint("\n[bold]Transcription Complete[/bold]")
+        if requeued_count > 0:
+            rprint(f" [yellow]Requeued (retryable-failed): {requeued_count}[/yellow]")
         rprint(f" [green]Successes: {successes}[/green]")
         rprint(f" [red]Failures: {failures}[/red]")
         if skipped > 0:
@@ -598,9 +597,10 @@ def channel_retry_failed(
     The TranscriptionHandler already checks availability during download
     and raises TranscriptionFailureError with proper categories.
     """
-    from src.channel.sync import get_failed_videos
+    from src.channel.sync import get_failed_videos, mark_video_transcribed
     from src.core.config import get_settings_with_yaml
     from src.pipeline import get_transcript
+    from src.services.video_service import mark_video_transcription_failed
 
     settings = get_settings_with_yaml()
 
@@ -637,18 +637,10 @@ def channel_retry_failed(
         if reset_only:
 
             async def reset_all():
-                for i, video in enumerate(failed[:num_to_process], 1):
-                    async with MongoDBManager() as db:
-                        await db.video_metadata.update_one(
-                            {"video_id": video.video_id},
-                            {
-                                "$set": {
-                                    "transcript_status": "pending",
-                                    "transcript_error": None,
-                                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                                }
-                            },
-                        )
+                from src.services.video_service import reset_failed_transcription as do_reset
+
+                for video in failed[:num_to_process]:
+                    await do_reset(video.video_id)
 
             asyncio.run(reset_all())
             rprint(f"\n[green]✓ Reset {num_to_process} videos to pending status[/green]\n")
@@ -683,8 +675,7 @@ def channel_retry_failed(
                             await asyncio.sleep(0.5 * (attempt + 1))
 
                     if transcript:
-                        async with MongoDBManager() as db:
-                            await db.mark_transcript_completed(video.video_id, transcript["_id"])
+                        await mark_video_transcribed(video.video_id, transcript["_id"])
                         rprint(" [green]✓ Transcribed[/green]")
                         successes += 1
                     else:
@@ -701,11 +692,12 @@ def channel_retry_failed(
                         rprint(f" [red]✗ Error ({fail_category})[/red]: {escape(error_msg)}")
                         failures += 1
 
-                    async with MongoDBManager() as db:
-                        await db.mark_transcript_failed(
-                    video.video_id, error_msg, fail_category,
-                    current_failure_count=getattr(video, 'transcript_failure_count', 0) or 0,
-                )
+                    await mark_video_transcription_failed(
+                        video.video_id,
+                        error_msg,
+                        fail_category,
+                        current_failure_count=getattr(video, "transcript_failure_count", 0) or 0,
+                    )
 
         asyncio.run(process_all())
 

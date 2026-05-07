@@ -10,6 +10,12 @@ This module centralizes all application-wide constants for:
 from datetime import datetime, timezone
 import importlib.metadata
 
+from src.transcription.failures import (
+    ESCALABLE_FAILURE_CATEGORIES,
+    MAX_RETRIES_BEFORE_PERMANENT,
+    PERMANENT_FAILURE_CATEGORIES,
+)
+
 # Application start time (for uptime calculation)
 START_TIME = datetime.now(timezone.utc)
 
@@ -287,25 +293,8 @@ PERMANENT_AVAILABILITY = frozenset({
     VIDEO_AVAILABILITY_GEO_RESTRICTED,
 })
 
-# Error categories that correspond to permanent restrictions.
-# Videos with these categories should not be retried.
-PERMANENT_FAILURE_CATEGORIES = frozenset({
-    "members_only",
-    "private",
-    "unavailable",
-    "geo_restricted",
-})
-
-# Categories that are retryable but should be escalated to permanent
-# after MAX_RETRIES_BEFORE_PERMANENT consecutive failures.
-ESCALABLE_FAILURE_CATEGORIES: frozenset[str] = frozenset({
-    "temporary_block",
-    "unknown",
-})
-
-# Maximum number of consecutive failures before a retryable category
-# is automatically escalated to "unavailable" (permanent).
-MAX_RETRIES_BEFORE_PERMANENT = 3
+# Error categories and escalation thresholds are sourced from
+# src.transcription.failures to keep retry/permanent logic centralized.
 
 # Mapping from yt-dlp availability strings to our normalized values
 YTDLP_AVAILABILITY_MAP: dict[str, str] = {

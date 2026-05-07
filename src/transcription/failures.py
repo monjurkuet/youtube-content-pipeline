@@ -15,6 +15,16 @@ RETRYABLE_FAILURE_CATEGORIES = frozenset(
     }
 )
 
+ESCALABLE_FAILURE_CATEGORIES = frozenset(
+    {
+        "temporary_block",
+        "timeout",
+        "unknown",
+    }
+)
+
+MAX_RETRIES_BEFORE_PERMANENT = 3
+
 PERMANENT_FAILURE_CATEGORIES = frozenset(
     {
         "members_only",
@@ -35,6 +45,33 @@ def is_retryable_failure_category(category: TranscriptionFailureCategory) -> boo
 def is_permanent_failure_category(category: TranscriptionFailureCategory) -> bool:
     """Return whether the category represents a permanent, non-retryable failure."""
     return category in PERMANENT_FAILURE_CATEGORIES
+
+
+def classify_error_message(message: str) -> TranscriptionFailureCategory:
+    """Classify an error message into a transcription failure category."""
+    lowered = message.lower()
+
+    if "could not identify source type" in lowered or "unsupported source type" in lowered:
+        return "invalid_source"
+    if "geo" in lowered or "country" in lowered or "not available in your region" in lowered:
+        return "geo_restricted"
+    if "members-only" in lowered or "join this channel" in lowered or "members only" in lowered:
+        return "members_only"
+    if "private" in lowered:
+        return "private"
+    if "unavailable" in lowered or "not available" in lowered:
+        return "unavailable"
+    if "age" in lowered and "restrict" in lowered:
+        return "age_restricted"
+    if "live event" in lowered or "upcoming" in lowered or "is_live" in lowered:
+        return "live_stream"
+    if "403" in lowered or "forbidden" in lowered or "sign in to confirm" in lowered:
+        return "temporary_block"
+    if "timeout" in lowered or "timed out" in lowered:
+        return "timeout"
+    if "http " in lowered or "too many requests" in lowered or "rate limit" in lowered or "429" in lowered:
+        return "remote_service"
+    return "unknown"
 
 
 def create_failure(
@@ -71,15 +108,9 @@ def failure_from_exception(
         return failure.model_copy(update={"video_id": video_id})
 
     message = str(exc).strip() or "Unexpected transcription failure"
-    lowered = message.lower()
-    category = default_category
-
-    if "could not identify source type" in lowered or "unsupported source type" in lowered:
-        category = "invalid_source"
-    elif "timeout" in lowered or "timed out" in lowered:
-        category = "timeout"
-    elif "http " in lowered or "too many requests" in lowered or "rate limit" in lowered:
-        category = "remote_service"
+    category = classify_error_message(message)
+    if category == "unknown":
+        category = default_category
 
     return create_failure(
         message,

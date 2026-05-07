@@ -377,7 +377,11 @@ uv run python -m src.cli channel retry-failed @ChartChampions --batch-size 10
 # Retry ALL failed videos at once
 uv run python -m src.cli channel retry-failed @ChartChampions --all
 
+# Retry only videos with a specific error category (e.g., timeout)
+uv run python -m src.cli channel retry-failed @ChartChampions -c timeout --all
+
 # Reset failed status to pending without immediate retry
+# This clears the failure count and error category, giving a fresh start
 uv run python -m src.cli channel retry-failed @ChartChampions --reset
 ```
 
@@ -388,7 +392,29 @@ uv run python -m src.cli channel retry-failed @ChartChampions --reset
 | `retry-failed @Channel` | Retry 5 failed videos (default) | Quick fixes |
 | `retry-failed @Channel --batch-size 20` | Retry 20 failed videos | Bulk retry |
 | `retry-failed @Channel --all` | Retry ALL failed videos | Complete retry |
+| `retry-failed @Channel -c timeout --all` | Retry only timeout failures | Targeted retry |
 | `retry-failed @Channel --reset` | Reset status only, no retry | Prepare for later |
+
+### **Automatic Requeue of Retryable Failures**
+
+When running `transcribe-pending`, use `--include-retryable-failed` to
+automatically requeue videos that failed with transient errors (timeout,
+temporary_block, remote_service) before processing pending videos:
+
+```bash
+# Requeue transient failures and then transcribe pending
+uv run python -m src.cli channel transcribe-pending @ChartChampions --include-retryable-failed
+
+# Full scheduled run: requeue transient failures + process all pending
+uv run python -m src.cli channel transcribe-pending --all --include-retryable-failed
+```
+
+**How it works:**
+- Videos with retryable error categories and failure count below the escalation
+  threshold are set back to `pending` (failure count is preserved)
+- Videos that have reached the maximum retry count are escalated to permanent
+  and excluded from requeue
+- The requeue count is displayed in the CLI output
 
 ### **Status Management**
 ```bash

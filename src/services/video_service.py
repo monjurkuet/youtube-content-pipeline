@@ -4,7 +4,14 @@ import logging
 from datetime import datetime, timezone
 
 from src.channel.schemas import VideoMetadataDocument
+from src.core.constants import (
+    PERMANENT_AVAILABILITY,
+)
 from src.database.manager import MongoDBManager
+from src.transcription.failures import (
+    MAX_RETRIES_BEFORE_PERMANENT,
+    RETRYABLE_FAILURE_CATEGORIES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,11 +108,60 @@ async def reset_failed_transcription(
                 "$set": {
                     "transcript_status": "pending",
                     "transcript_error": None,
+                    "transcript_error_category": None,
+                    "transcript_failure_count": 0,
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }
             },
         )
         return result.modified_count > 0
+
+
+async def requeue_retryable_failed(
+    channel_id: str | None = None,
+    db_manager: MongoDBManager | None = None,
+) -> int:
+    """Requeue failed videos with retryable categories that haven't
+
+    exceeded the escalation threshold.
+
+    Sets transcript_status to "pending" and clears transcript_error /
+    transcript_error_category, but does NOT reset transcript_failure_count
+    (automatic requeues preserve the count for escalation).
+
+    Args:
+        channel_id: Optional channel ID to filter by.
+        db_manager: Optional MongoDBManager instance to reuse.
+
+    Returns:
+        Number of videos requeued.
+    """
+    query: dict = {
+        "transcript_status": "failed",
+        "transcript_error_category": {"$in": list(RETRYABLE_FAILURE_CATEGORIES)},
+        "transcript_failure_count": {"$lt": MAX_RETRIES_BEFORE_PERMANENT},
+    }
+    if channel_id:
+        query["channel_id"] = channel_id
+
+    async with db_manager or MongoDBManager() as db:
+        query["availability"] = {"$nin": list(PERMANENT_AVAILABILITY)}
+
+        result = await db.video_metadata.update_many(
+            query,
+            {
+                "$set": {
+                    "transcript_status": "pending",
+                    "transcript_error": None,
+                    "transcript_error_category": None,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            },
+        )
+        requeued = result.modified_count
+        if requeued > 0:
+            logger.info("Requeued %d retryable-failed video(s) for automatic retry", requeued)
+        return requeued
 
 
 async def mark_video_transcribed(
@@ -123,3 +179,31 @@ async def mark_video_transcribed(
     """
     async with db_manager or MongoDBManager() as db:
         return await db.mark_transcript_completed(video_id, transcript_id)
+
+
+async def mark_video_transcription_failed(
+    video_id: str,
+    error_message: str,
+    error_category: str,
+    current_failure_count: int | None = None,
+    db_manager: MongoDBManager | None = None,
+) -> bool:
+    """Mark a video transcription attempt as failed.
+
+    Args:
+        video_id: Video identifier.
+        error_message: Error message to persist.
+        error_category: Structured failure category.
+        current_failure_count: Optional current failure count for escalation logic.
+        db_manager: Optional MongoDBManager instance to reuse.
+
+    Returns:
+        True when a matching video document was found.
+    """
+    async with db_manager or MongoDBManager() as db:
+        return await db.mark_transcript_failed(
+            video_id,
+            error_message,
+            error_category,
+            current_failure_count=current_failure_count,
+        )

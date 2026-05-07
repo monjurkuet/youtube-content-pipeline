@@ -96,6 +96,12 @@ Environment variables take precedence over YAML configuration.
 | `YOUTUBE_API_TIMEOUT` | Request timeout (seconds) | `30` | No |
 | `YOUTUBE_API_LANGUAGES` | Preferred languages | `["en", "en-US", "en-GB"]` | No |
 
+### yt-dlp Download Configuration
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `YTDLP_DOWNLOAD_TIMEOUT_SEC` | yt-dlp audio download timeout (seconds) | `300` | No |
+
 ### Batch Configuration
 
 | Variable | Description | Default | Required |
@@ -137,8 +143,12 @@ youtube_api:
 
 # Batch Processing
 batch:
-  default_size: 5       # Videos per batch
+  default_size: 5 # Videos per batch
   show_progress: true
+
+# yt-dlp Download Settings
+ytdlp:
+  download_timeout_sec: 300 # Audio download timeout (seconds)
 
 # Groq Whisper API Settings
 groq:
@@ -190,6 +200,14 @@ Batch processing configuration.
 |-----|------|---------|-------------|
 | `default_size` | integer | `5` | Default videos per batch |
 | `show_progress` | boolean | `true` | Show progress bar |
+
+#### ytdlp
+
+yt-dlp download configuration.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `download_timeout_sec` | integer | `300` | Audio download timeout (seconds) |
 
 #### groq
 

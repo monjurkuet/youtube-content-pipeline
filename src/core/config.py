@@ -93,6 +93,9 @@ class Settings(BaseSettings):
     youtube_api_timeout: int = 30
     youtube_api_languages: list[str] = ["en", "en-US", "en-GB"]
 
+    # yt-dlp Configuration
+    ytdlp_download_timeout_sec: int = 300
+
     # Batch Configuration
     batch_default_size: int = 5
     batch_show_progress: bool = True
@@ -258,6 +261,12 @@ def apply_yaml_config(settings: Settings, config: dict[str, Any]) -> Settings:
         if "show_progress" in batch:
             settings.batch_show_progress = bool(batch["show_progress"])
 
+    # yt-dlp
+    if "ytdlp" in config:
+        ytdlp = config["ytdlp"]
+        if "download_timeout_sec" in ytdlp and settings.ytdlp_download_timeout_sec == 300:
+            settings.ytdlp_download_timeout_sec = int(ytdlp["download_timeout_sec"])
+
     # Groq
     if "groq" in config:
         groq = config["groq"]
@@ -307,6 +316,6 @@ def get_settings_with_yaml(config_path: Path | str | None = None) -> Settings:
     Returns:
         Settings object with YAML configuration applied
     """
-    settings = get_settings()
+    settings = get_settings().model_copy(deep=True)
     config = load_yaml_config(config_path)
     return apply_yaml_config(settings, config)

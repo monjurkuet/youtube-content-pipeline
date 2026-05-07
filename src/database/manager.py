@@ -11,11 +11,16 @@ from typing import Any
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
 from src.core.config import get_settings
-from src.core.schemas import TranscriptDocument
 from src.core.constants import (
     ERROR_CATEGORY_TO_AVAILABILITY,
+    VIDEO_AVAILABILITY_UNAVAILABLE,
 )
-from src.transcription.failures import PERMANENT_FAILURE_CATEGORIES
+from src.core.schemas import TranscriptDocument
+from src.transcription.failures import (
+    ESCALABLE_FAILURE_CATEGORIES,
+    MAX_RETRIES_BEFORE_PERMANENT,
+    PERMANENT_FAILURE_CATEGORIES,
+)
 
 
 class MongoDBManager:
@@ -475,6 +480,7 @@ class MongoDBManager:
                 "$set": {
                     "transcript_status": "completed",
                     "transcript_id": transcript_id,
+                    "transcript_failure_count": 0,
                 },
                 "$unset": {
                     "transcript_error": "",
@@ -489,34 +495,52 @@ class MongoDBManager:
         video_id: str,
         error_message: str | None = None,
         error_category: str | None = None,
+        current_failure_count: int | None = None,
     ) -> bool:
         """Mark video transcription as failed.
+
+        Atomically increments transcript_failure_count. If the category
+        is in ESCALABLE_FAILURE_CATEGORIES and the next failure count
+        reaches MAX_RETRIES_BEFORE_PERMANENT, the video is escalated
+        to permanent (unavailable) so it won't be retried again.
 
         Args:
             video_id: Video identifier
             error_message: Optional error message
             error_category: Optional category for structured error tracking.
                 Valid values: geo_restricted, members_only, age_restricted,
-                temporary_block, private, unavailable
+                temporary_block, private, unavailable, timeout
+            current_failure_count: Pre-fetched current count for escalation.
+                When provided, the next count is current_failure_count + 1.
+                When omitted, escalation is skipped (safe for callers
+                that don't need escalation semantics).
 
         Returns:
-            True if successful
+            True if a matching document was found
         """
         await self.initialize()
-        update = {"$set": {"transcript_status": "failed"}}
+        set_fields: dict[str, Any] = {"transcript_status": "failed"}
         if error_message:
-            update["$set"]["transcript_error"] = error_message
+            set_fields["transcript_error"] = error_message
         if error_category:
-            update["$set"]["transcript_error_category"] = error_category
-            # Map error category to availability for permanent restrictions
-            if error_category in ERROR_CATEGORY_TO_AVAILABILITY:
-                update["$set"]["availability"] = ERROR_CATEGORY_TO_AVAILABILITY[error_category]
+            set_fields["transcript_error_category"] = error_category
 
+        should_escalate = (
+            current_failure_count is not None
+            and error_category in ESCALABLE_FAILURE_CATEGORIES
+            and (current_failure_count + 1) >= MAX_RETRIES_BEFORE_PERMANENT
+        )
+        if should_escalate:
+            set_fields["availability"] = VIDEO_AVAILABILITY_UNAVAILABLE
+        elif error_category in ERROR_CATEGORY_TO_AVAILABILITY:
+            set_fields["availability"] = ERROR_CATEGORY_TO_AVAILABILITY[error_category]
+
+        update: dict[str, Any] = {"$set": set_fields, "$inc": {"transcript_failure_count": 1}}
         result = await self.video_metadata.update_one(
             {"video_id": video_id},
             update,
         )
-        return result.modified_count > 0
+        return result.matched_count > 0
 
     async def get_video_count(
         self,

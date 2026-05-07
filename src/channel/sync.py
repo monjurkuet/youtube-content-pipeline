@@ -12,7 +12,9 @@ from src.services.video_service import (
     get_failed_videos,
     get_pending_videos,
     get_restricted_videos,
+    mark_video_transcription_failed,
     mark_video_transcribed,
+    requeue_retryable_failed,
     reset_failed_transcription,
 )
 from src.video.cookie_manager import get_cookie_manager

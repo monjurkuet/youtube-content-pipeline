@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 from src.core.exceptions import TranscriptionFailureError
-from src.transcription.failures import create_failure
+from src.transcription.failures import classify_error_message, create_failure
 from src.video.cookie_manager import get_cookie_manager
 
 logger = logging.getLogger(__name__)
@@ -24,6 +24,8 @@ ErrorCategory = Literal[
     "unavailable",
     "live_stream",
     "timeout",
+    "remote_service",
+    "invalid_source",
     "unknown",
 ]
 
@@ -107,24 +109,17 @@ class YouTubeDownloader:
 
     def classify_error(self, error_detail: str) -> tuple[str, ErrorCategory]:
         """Classify yt-dlp error into structured categories."""
-        error_msg = error_detail.lower()
-
-        if "live event" in error_msg or "upcoming" in error_msg:
-            return "Live stream (upcoming)", "live_stream"
-        elif "private" in error_msg:
-            return "Video is private", "private"
-        elif "unavailable" in error_msg or "not available" in error_msg:
-            return "Video unavailable", "unavailable"
-        elif "members-only" in error_msg or "join" in error_msg:
-            return "Members-only video", "members_only"
-        elif "age" in error_msg and "restricted" in error_msg:
-            return "Age-restricted", "age_restricted"
-        elif "geo" in error_msg or "country" in error_msg or "not available in your region" in error_msg:
-            return "Geo-restricted", "geo_restricted"
-        elif "403" in error_msg or "forbidden" in error_msg or "sign in to confirm" in error_msg:
-            return "Access forbidden (likely temporary IP block)", "temporary_block"
-        else:
-            return f"Video error: {error_detail[:50]}", "unknown"
+        category = classify_error_message(error_detail)
+        reason_map: dict[str, str] = {
+            "live_stream": "Live stream (upcoming)",
+            "private": "Video is private",
+            "unavailable": "Video unavailable",
+            "members_only": "Members-only video",
+            "age_restricted": "Age-restricted",
+            "geo_restricted": "Geo-restricted",
+            "temporary_block": "Access forbidden (likely temporary IP block)",
+        }
+        return reason_map.get(category, f"Video error: {error_detail[:50]}"), category
 
     def download_audio(self, video_id: str) -> Path:
         """Download audio from YouTube video.
@@ -134,6 +129,11 @@ class YouTubeDownloader:
         cloud IPs. The download loop below already handles error classification
         and retry logic, making the pre-flight redundant and harmful.
         """
+        from src.core.config import get_settings
+
+        settings = get_settings()
+        download_timeout = settings.ytdlp_download_timeout_sec
+
         output_path = self.work_dir / f"{video_id}_audio.mp3"
         url = f"https://www.youtube.com/watch?v={video_id}"
 
@@ -150,7 +150,7 @@ class YouTubeDownloader:
             cmd.append(url)
 
             try:
-                subprocess.run(cmd, check=True, timeout=300, capture_output=True, text=True)
+                subprocess.run(cmd, check=True, timeout=download_timeout, capture_output=True, text=True)
                 return self._find_audio_file(video_id, output_path)
 
             except subprocess.CalledProcessError as e:
@@ -172,17 +172,17 @@ class YouTubeDownloader:
                     time.sleep(5)
                     self.cookie_manager.ensure_cookies()
                     cookie_args = self.cookie_manager.get_cookie_args()
-                    if cookie_args:
-                        cmd_with_cookies = _get_yt_dlp_base_cmd(output_path)
-                        cmd_with_cookies.insert(2, "-f")
-                        cmd_with_cookies.insert(3, format_option)
-                        cmd_with_cookies.extend(cookie_args)
-                        cmd_with_cookies.append(url)
-                        try:
-                            subprocess.run(cmd_with_cookies, check=True, timeout=300, capture_output=True, text=True)
-                            return self._find_audio_file(video_id, output_path)
-                        except Exception:
-                            continue
+                if cookie_args:
+                    cmd_with_cookies = _get_yt_dlp_base_cmd(output_path)
+                    cmd_with_cookies.insert(2, "-f")
+                    cmd_with_cookies.insert(3, format_option)
+                    cmd_with_cookies.extend(cookie_args)
+                    cmd_with_cookies.append(url)
+                    try:
+                        subprocess.run(cmd_with_cookies, check=True, timeout=download_timeout, capture_output=True, text=True)
+                        return self._find_audio_file(video_id, output_path)
+                    except Exception:
+                        continue
 
                 if category in [
                     "private",
@@ -212,7 +212,7 @@ class YouTubeDownloader:
         final_cmd.insert(3, "bestaudio/best")
         final_cmd.append(url)
         try:
-            subprocess.run(final_cmd, check=True, timeout=300, capture_output=True, text=True)
+            subprocess.run(final_cmd, check=True, timeout=download_timeout, capture_output=True, text=True)
             return self._find_audio_file(video_id, output_path)
         except subprocess.TimeoutExpired as e:
             raise TranscriptionFailureError(
