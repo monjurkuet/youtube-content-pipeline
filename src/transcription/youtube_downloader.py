@@ -67,7 +67,7 @@ def _ensure_js_runtime() -> tuple[bool, str]:
     return False, "No JS runtime (bun/deno) found. yt-dlp might fail on some videos."
 
 
-def _get_yt_dlp_base_cmd(output_path: Path) -> list[str]:
+def _get_yt_dlp_base_cmd(output_path: Path, proxy_url: str | None = None) -> list[str]:
     """Build base yt-dlp command with recommended args for audio extraction."""
     # Use system yt-dlp (2026.03.17+) which has better JS challenge support
     yt_dlp_cmd = "/usr/local/bin/yt-dlp"
@@ -87,6 +87,10 @@ def _get_yt_dlp_base_cmd(output_path: Path) -> list[str]:
         "--remote-components", "ejs:github",
     ]
 
+    # Route all YouTube traffic through the VPN proxy to avoid VPS IP blocks
+    if proxy_url:
+        cmd.extend(["--proxy", proxy_url])
+
     # Use bun as JS runtime for better YouTube challenge solving
     js_runtime = _find_js_runtime("bun")
     if js_runtime:
@@ -94,7 +98,7 @@ def _get_yt_dlp_base_cmd(output_path: Path) -> list[str]:
 
     # Use modern extractor args
     cmd.extend([
-        "--extractor-args", "youtube:player-client=web,android",
+        "--extractor-args", "youtube:player_client=web,android",
     ])
 
     return cmd
@@ -129,9 +133,10 @@ class YouTubeDownloader:
         cloud IPs. The download loop below already handles error classification
         and retry logic, making the pre-flight redundant and harmful.
         """
-        from src.core.config import get_settings
+        from src.core.config import get_settings_with_yaml
 
-        settings = get_settings()
+        settings = get_settings_with_yaml()
+        proxy_url = settings.youtube_api_proxy_url
         download_timeout = settings.ytdlp_download_timeout_sec
 
         output_path = self.work_dir / f"{video_id}_audio.mp3"
@@ -144,7 +149,7 @@ class YouTubeDownloader:
         last_failure = None
 
         for format_option in format_options:
-            cmd = _get_yt_dlp_base_cmd(output_path)
+            cmd = _get_yt_dlp_base_cmd(output_path, proxy_url=proxy_url)
             cmd.insert(2, "-f")
             cmd.insert(3, format_option)
             cmd.append(url)
@@ -172,17 +177,17 @@ class YouTubeDownloader:
                     time.sleep(5)
                     self.cookie_manager.ensure_cookies()
                     cookie_args = self.cookie_manager.get_cookie_args()
-                if cookie_args:
-                    cmd_with_cookies = _get_yt_dlp_base_cmd(output_path)
-                    cmd_with_cookies.insert(2, "-f")
-                    cmd_with_cookies.insert(3, format_option)
-                    cmd_with_cookies.extend(cookie_args)
-                    cmd_with_cookies.append(url)
-                    try:
-                        subprocess.run(cmd_with_cookies, check=True, timeout=download_timeout, capture_output=True, text=True)
-                        return self._find_audio_file(video_id, output_path)
-                    except Exception:
-                        continue
+                    if cookie_args:
+                        cmd_with_cookies = _get_yt_dlp_base_cmd(output_path, proxy_url=proxy_url)
+                        cmd_with_cookies.insert(2, "-f")
+                        cmd_with_cookies.insert(3, format_option)
+                        cmd_with_cookies.extend(cookie_args)
+                        cmd_with_cookies.append(url)
+                        try:
+                            subprocess.run(cmd_with_cookies, check=True, timeout=download_timeout, capture_output=True, text=True)
+                            return self._find_audio_file(video_id, output_path)
+                        except Exception:
+                            pass  # Fall through to next format option
 
                 if category in [
                     "private",
@@ -206,8 +211,8 @@ class YouTubeDownloader:
                     )
                 ) from e
 
-        # Last try without cookies
-        final_cmd = _get_yt_dlp_base_cmd(output_path)
+        # Last try without cookies (still through proxy)
+        final_cmd = _get_yt_dlp_base_cmd(output_path, proxy_url=proxy_url)
         final_cmd.insert(2, "-f")
         final_cmd.insert(3, "bestaudio/best")
         final_cmd.append(url)

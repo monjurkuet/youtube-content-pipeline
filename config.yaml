@@ -37,6 +37,26 @@ youtube_api:
     - en-US
     - en-GB
 
+  # VPN proxy URL for routing YouTube API requests through ProtonVPN
+  # This bypasses YouTube IP blocks on cloud/VPS IPs by routing through
+  # a residential VPN tunnel (ProtonVPN via binancevpn namespace).
+  # Set to empty string to disable and use direct connection.
+  proxy_url: "http://127.0.0.1:4001"
+
+# Chrome CDP (Cookie Extraction) Configuration
+# When Chrome runs on a remote machine (e.g. Windows desktop), the CDP
+# debugging port can be accessed via SSH tunnel.
+cdp:
+  # CDP remote host (default: localhost — use SSH tunnel)
+  remote_host: "localhost"
+
+  # CDP ports to try (order matters — first available wins)
+  ports: [9225, 9222, 9224]
+
+  # Set to true when an SSH tunnel forwards the remote Chrome CDP port
+  # to localhost (e.g. ssh -L 9225:localhost:9222 root@desktop)
+  use_ssh_tunnel: true
+
 # Batch Processing Configuration
 # Note: Videos are processed sequentially (one-by-one), not in parallel
 batch:

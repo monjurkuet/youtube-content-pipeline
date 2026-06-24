@@ -65,6 +65,8 @@ def classify_error_message(message: str) -> TranscriptionFailureCategory:
         return "age_restricted"
     if "live event" in lowered or "upcoming" in lowered or "is_live" in lowered:
         return "live_stream"
+    if "subtitles are disabled" in lowered or "transcript is disabled" in lowered:
+        return "unavailable"
     if "403" in lowered or "forbidden" in lowered or "sign in to confirm" in lowered:
         return "temporary_block"
     if "timeout" in lowered or "timed out" in lowered:

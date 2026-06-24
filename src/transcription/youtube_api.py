@@ -43,7 +43,15 @@ class YouTubeAPIProvider:
         (a requests.Session). By pre-loading it with YouTube/Google cookies
         extracted from CDP, every request includes auth cookies that bypass
         "Sign in to confirm" challenges on cloud/server IPs.
+
+        If a VPN proxy is configured (youtube_api_proxy_url), the session
+        routes through it to avoid IP-based blocks entirely.
         """
+        from src.core.config import get_settings_with_yaml
+
+        settings = get_settings_with_yaml()
+        proxy_url = settings.youtube_api_proxy_url
+
         try:
             self.cookie_manager.ensure_cookies()
             cookies_dict = self.cookie_manager.get_cookies_dict()
@@ -54,6 +62,13 @@ class YouTubeAPIProvider:
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
                     "Accept-Language": "en-US,en;q=0.9",
                 })
+                # Apply VPN proxy if configured
+                if proxy_url:
+                    session.proxies.update({
+                        "http": proxy_url,
+                        "https": proxy_url,
+                    })
+                    logger.info(f"Using VPN proxy for YouTube API: {proxy_url}")
                 # Load cookies into the session
                 for name, value in cookies_dict.items():
                     # Set on youtube.com and google.com domains
@@ -69,6 +84,16 @@ class YouTubeAPIProvider:
                 logger.warning("No cookies available for YouTube API - using unauthenticated session")
         except Exception as e:
             logger.warning(f"Failed to create authenticated API session: {e}")
+
+        # Even without cookies, apply proxy if configured
+        if proxy_url:
+            session = requests.Session()
+            session.proxies.update({
+                "http": proxy_url,
+                "https": proxy_url,
+            })
+            logger.info(f"Using VPN proxy (unauthenticated): {proxy_url}")
+            return YouTubeTranscriptApi(http_client=session)
 
         return YouTubeTranscriptApi()
 

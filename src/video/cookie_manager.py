@@ -27,6 +27,8 @@ class YouTubeCookieManager:
         cache_duration_hours: int = 24,
         auto_extract: bool = True,
         cookie_file: Path | None = None,
+        cdp_ports: list[int] | None = None,
+        cdp_remote_host: str = "localhost",
     ):
         """
         Initialize cookie manager.
@@ -40,6 +42,8 @@ class YouTubeCookieManager:
         self.auto_extract = auto_extract
         self.cookie_file = cookie_file or (Path.home() / ".config/yt-dlp/cookies.txt")
         self.metadata_file = self.cookie_file.parent / ".cookie_metadata.json"
+        self._cdp_ports = cdp_ports or [9222, 9224, 9225]
+        self._cdp_remote_host = cdp_remote_host
 
     def ensure_cookies(self) -> bool:
         """
@@ -173,9 +177,14 @@ class YouTubeCookieManager:
         Uses Storage.getCookies to pull all cookies from actively logged-in
         Chrome instances on remote debugging ports. More reliable than
         browser_cookie3 on WSL where Chrome runs on the Windows host.
+
+        Args:
+            ports: Override CDP ports. Defaults to self._cdp_ports (which
+                is [9222, 9224, 9225] or whatever was passed at init).
         """
         if ports is None:
-            ports = [9222, 9224, 9225]
+            ports = self._cdp_ports
+        cdp_host = self._cdp_remote_host
 
         try:
             import asyncio
@@ -188,11 +197,13 @@ class YouTubeCookieManager:
             return False
 
         try:
-            async def _extract():
+            async def _extract() -> bool:
+                """Run CDP extraction. Returns True if cookies were saved to disk, False otherwise.
+                Side-effect: writes cookie file and metadata directly on success."""
                 all_cookies = {}
                 for port in ports:
                     try:
-                        url = f"http://localhost:{port}/json/version"
+                        url = f"http://{cdp_host}:{port}/json/version"
                         req = urllib.request.Request(url)
                         with urllib.request.urlopen(req, timeout=5) as resp:
                             data = _json.loads(resp.read())
@@ -214,83 +225,105 @@ class YouTubeCookieManager:
                     except Exception as e:
                         logger.debug(f"CDP port {port} failed: {e}")
                         continue
-                return list(all_cookies.values())
 
-            cookies = asyncio.run(_extract())
-            if not cookies:
+                if not all_cookies:
+                    logger.info("CDP: no cookies extracted from any port")
+                    return False
+
+                # Filter for YouTube/Google relevant domains
+                yt_relevant_domains = {
+                    ".youtube.com", "www.youtube.com", "youtube.com",
+                    ".google.com", "www.google.com", "google.com",
+                    "accounts.google.com", ".accounts.google.com",
+                    ".googleapis.com", ".googlevideo.com",
+                    ".gstatic.com", ".ytimg.com",
+                }
+
+                def _is_relevant(domain):
+                    d = domain.lower().lstrip(".")
+                    for r in yt_relevant_domains:
+                        rl = r.lower().lstrip(".")
+                        if d == rl or d.endswith(rl):
+                            return True
+                    return False
+
+                yt_cookies = [c for c in all_cookies.values() if _is_relevant(c.get("domain", ""))]
+
+                # Check auth cookies
+                important = [
+                    "LOGIN_INFO", "SSID", "APISID", "SAPISID", "HSID",
+                    "__Secure-1PSID", "__Secure-3PSID", "__Secure-1PSIDTS",
+                    "__Secure-3PSIDTS", "__Secure-1PAPISID", "__Secure-3PAPISID",
+                ]
+                found_auth = [c["name"] for c in yt_cookies if c["name"] in important]
+
+                if not found_auth:
+                    logger.info("CDP: no auth cookies found, falling back to browser_cookie3")
+                    return False
+
+                # Write in Netscape/Mozilla cookies.txt format
+                self.cookie_file.parent.mkdir(parents=True, exist_ok=True)
+                lines = [
+                    "# Netscape HTTP Cookie File",
+                    "# https://curl.se/docs/http-cookies.html",
+                    "# This is a generated file! Do not edit.",
+                    "",
+                ]
+                for c in sorted(yt_cookies, key=lambda x: (x.get("domain", ""), x.get("name", ""))):
+                    domain = c.get("domain", "")
+                    include_sub = "TRUE" if domain.startswith(".") else "FALSE"
+                    path = c.get("path", "/")
+                    secure = "TRUE" if c.get("secure", False) else "FALSE"
+                    expires = c.get("expires", -1)
+                    if expires == -1:
+                        expires = int(datetime.now().timestamp()) + 86400 * 365
+                    else:
+                        expires = int(expires)
+                    lines.append(f"{domain}\t{include_sub}\t{path}\t{secure}\t{expires}\t{c['name']}\t{c['value']}")
+
+                self.cookie_file.write_text("\n".join(lines) + "\n")
+
+                youtube_count = len([c for c in yt_cookies if "youtube" in c.get("domain", "")])
+                google_count = len([c for c in yt_cookies if "google" in c.get("domain", "")])
+
+                metadata = {
+                    "extracted_at": datetime.now().isoformat(),
+                    "source": "cdp",
+                    "ports": ports,
+                    "youtube_count": youtube_count,
+                    "google_count": google_count,
+                    "auth_cookies": found_auth,
+                    "has_auth": True,
+                    "total_cookies": len(yt_cookies),
+                }
+                self._save_metadata(metadata)
+
+                logger.info(f"CDP: saved {len(yt_cookies)} YouTube/Google cookies ({len(found_auth)} auth types)")
+                console.print(f"[green] \u2713 CDP: Extracted {len(yt_cookies)} cookies ({len(found_auth)} auth types) from ports {ports}[/green]")
+                return True
+
+            # Run the async extraction. Handle the case where we may already be
+            # inside an event loop (e.g. when called from an async CLI context).
+            try:
+                asyncio.get_running_loop()
+                # Already inside an event loop — run in a background thread with
+                # its own loop to avoid "asyncio.run() cannot be called from a
+                # running event loop".
+                import concurrent.futures
+
+                def _run_in_thread() -> bool:
+                    return asyncio.run(_extract())
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    success = executor.submit(_run_in_thread).result(timeout=30)
+            except RuntimeError:
+                # No running loop — safe to use asyncio.run() directly.
+                success = asyncio.run(_extract())
+
+            if not success:
                 logger.info("CDP: no cookies extracted from any port")
                 return False
 
-            # Filter for YouTube/Google relevant domains
-            yt_relevant_domains = {
-                ".youtube.com", "www.youtube.com", "youtube.com",
-                ".google.com", "www.google.com", "google.com",
-                "accounts.google.com", ".accounts.google.com",
-                ".googleapis.com", ".googlevideo.com",
-                ".gstatic.com", ".ytimg.com",
-            }
-
-            def _is_relevant(domain):
-                d = domain.lower().lstrip(".")
-                for r in yt_relevant_domains:
-                    rl = r.lower().lstrip(".")
-                    if d == rl or d.endswith(rl):
-                        return True
-                return False
-
-            yt_cookies = [c for c in cookies if _is_relevant(c.get("domain", ""))]
-
-            # Check auth cookies
-            important = [
-                "LOGIN_INFO", "SSID", "APISID", "SAPISID", "HSID",
-                "__Secure-1PSID", "__Secure-3PSID", "__Secure-1PSIDTS",
-                "__Secure-3PSIDTS", "__Secure-1PAPISID", "__Secure-3PAPISID",
-            ]
-            found_auth = [c["name"] for c in yt_cookies if c["name"] in important]
-
-            if not found_auth:
-                logger.info("CDP: no auth cookies found, falling back to browser_cookie3")
-                return False
-
-            # Write in Netscape/Mozilla cookies.txt format
-            self.cookie_file.parent.mkdir(parents=True, exist_ok=True)
-            lines = [
-                "# Netscape HTTP Cookie File",
-                "# https://curl.se/docs/http-cookies.html",
-                "# This is a generated file! Do not edit.",
-                "",
-            ]
-            for c in sorted(yt_cookies, key=lambda x: (x.get("domain", ""), x.get("name", ""))):
-                domain = c.get("domain", "")
-                include_sub = "TRUE" if domain.startswith(".") else "FALSE"
-                path = c.get("path", "/")
-                secure = "TRUE" if c.get("secure", False) else "FALSE"
-                expires = c.get("expires", -1)
-                if expires == -1:
-                    expires = int(datetime.now().timestamp()) + 86400 * 365
-                else:
-                    expires = int(expires)
-                lines.append(f"{domain}\t{include_sub}\t{path}\t{secure}\t{expires}\t{c['name']}\t{c['value']}")
-
-            self.cookie_file.write_text("\n".join(lines) + "\n")
-
-            youtube_count = len([c for c in yt_cookies if "youtube" in c.get("domain", "")])
-            google_count = len([c for c in yt_cookies if "google" in c.get("domain", "")])
-
-            metadata = {
-                "extracted_at": datetime.now().isoformat(),
-                "source": "cdp",
-                "ports": ports,
-                "youtube_count": youtube_count,
-                "google_count": google_count,
-                "auth_cookies": found_auth,
-                "has_auth": True,
-                "total_cookies": len(yt_cookies),
-            }
-            self._save_metadata(metadata)
-
-            logger.info(f"CDP: saved {len(yt_cookies)} YouTube/Google cookies ({len(found_auth)} auth types)")
-            console.print(f"[green] \u2713 CDP: Extracted {len(yt_cookies)} cookies ({len(found_auth)} auth types) from ports {ports}[/green]")
             return True
 
         except Exception as e:
@@ -607,14 +640,55 @@ _default_cookie_manager: YouTubeCookieManager | None = None
 
 
 def get_cookie_manager(
-    cache_duration_hours: int = 24, auto_extract: bool = True
+    cache_duration_hours: int = 24,
+    auto_extract: bool = True,
+    cdp_ports: list[int] | None = None,
+    cdp_remote_host: str | None = None,
 ) -> YouTubeCookieManager:
-    """Get default cookie manager instance (singleton)."""
+    """Get default cookie manager instance (singleton).
+
+    Args:
+        cache_duration_hours: Cookie cache TTL.
+        auto_extract: Whether to auto-extract missing cookies.
+        cdp_ports: Override CDP ports. Defaults to config.yaml or [9222, 9224, 9225].
+        cdp_remote_host: Override CDP host. Defaults to config.yaml or "localhost".
+
+    Settings are loaded from config.yaml (youtube_api + cdp sections).
+    Environment variables take precedence: YOUTUBE_CDP_REMOTE_HOST,
+    YOUTUBE_CDP_PORTS (comma-separated), YOUTUBE_CDP_USE_SSH_TUNNEL.
+    """
+    import os as _os
     global _default_cookie_manager
+
+    # Load from config / environment
+    try:
+        from src.core.config import get_settings_with_yaml
+        cfg = get_settings_with_yaml()
+        default_cdp_host = _os.environ.get(
+            "YOUTUBE_CDP_REMOTE_HOST",
+            getattr(cfg, "youtube_api_cdp_remote_host", "localhost"),
+        )
+        default_cdp_ports_raw = _os.environ.get(
+            "YOUTUBE_CDP_PORTS",
+            getattr(cfg, "youtube_api_cdp_ports", "9222,9224,9225"),
+        )
+        if isinstance(default_cdp_ports_raw, str):
+            default_cdp_ports = [int(p.strip()) for p in default_cdp_ports_raw.split(",")]
+        else:
+            default_cdp_ports = default_cdp_ports_raw
+    except Exception:
+        default_cdp_host = "localhost"
+        default_cdp_ports = [9222, 9224, 9225]
+
+    _cdp_remote_host = cdp_remote_host if cdp_remote_host is not None else default_cdp_host
+    _cdp_ports = cdp_ports if cdp_ports is not None else default_cdp_ports
+
     if _default_cookie_manager is None:
         _default_cookie_manager = YouTubeCookieManager(
             cache_duration_hours=cache_duration_hours,
             auto_extract=auto_extract,
+            cdp_ports=_cdp_ports,
+            cdp_remote_host=_cdp_remote_host,
         )
     return _default_cookie_manager
 

@@ -92,6 +92,10 @@ class Settings(BaseSettings):
     youtube_api_cookie_cache_hours: int = 24
     youtube_api_timeout: int = 30
     youtube_api_languages: list[str] = ["en", "en-US", "en-GB"]
+    youtube_api_proxy_url: str = ""  # e.g. "http://10.200.200.2:8888" for VPN proxy
+    # CDP (Chrome DevTools Protocol) settings for cookie extraction
+    youtube_api_cdp_remote_host: str = "localhost"
+    youtube_api_cdp_ports: list[int] = [9222, 9224, 9225]
 
     # yt-dlp Configuration
     ytdlp_download_timeout_sec: int = 300
@@ -252,6 +256,16 @@ def apply_yaml_config(settings: Settings, config: dict[str, Any]) -> Settings:
             settings.youtube_api_timeout = int(yt["timeout"])
         if "languages" in yt:
             settings.youtube_api_languages = yt["languages"]
+        if "proxy_url" in yt and not settings.youtube_api_proxy_url:
+            settings.youtube_api_proxy_url = yt["proxy_url"]
+
+    # CDP (Chrome DevTools Protocol) for cookie extraction
+    if "cdp" in config:
+        cdp = config["cdp"]
+        if "remote_host" in cdp:
+            settings.youtube_api_cdp_remote_host = cdp["remote_host"]
+        if "ports" in cdp:
+            settings.youtube_api_cdp_ports = cdp["ports"]
 
     # Batch
     if "batch" in config:
