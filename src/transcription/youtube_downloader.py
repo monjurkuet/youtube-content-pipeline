@@ -29,32 +29,28 @@ ErrorCategory = Literal[
     "unknown",
 ]
 
-# JS Runtime paths
-BUN_PATH = "/root/.bun/bin/bun"
-DENO_PATH = "/root/.deno/bin/deno"
+# JS Runtime paths — checked in order; shutil.which() fallback for PATH-based installs
+BUN_PATH = os.path.expanduser("~/.bun/bin/bun")
+DENO_PATH = os.path.expanduser("~/.deno/bin/deno")
 
 
 def _find_js_runtime(preferred: str = "bun") -> tuple[str, str] | None:
-    """Find available JS runtime."""
-    if preferred == "bun":
-        if os.path.isfile(BUN_PATH) and os.access(BUN_PATH, os.X_OK):
-            return "bun", BUN_PATH
-        path = shutil.which("bun")
-        if path:
-            return "bun", path
+    """Find available JS runtime. Returns (name, path_or_none)."""
+    search_order = [preferred] + [r for r in ("bun", "deno", "node") if r != preferred]
 
-    if os.path.isfile(DENO_PATH) and os.access(DENO_PATH, os.X_OK):
-        return "deno", DENO_PATH
-    path = shutil.which("deno")
-    if path:
-        return "deno", path
-
-    if preferred == "deno":
-        if os.path.isfile(BUN_PATH) and os.access(BUN_PATH, os.X_OK):
-            return "bun", BUN_PATH
-        path = shutil.which("bun")
+    for runtime in search_order:
+        # Check known install paths per runtime
+        known_paths = {
+            "bun": [os.path.expanduser("~/.bun/bin/bun"), "/root/.bun/bin/bun"],
+            "deno": [os.path.expanduser("~/.deno/bin/deno"), "/root/.deno/bin/deno"],
+        }
+        for kp in known_paths.get(runtime, []):
+            if os.path.isfile(kp) and os.access(kp, os.X_OK):
+                return runtime, kp
+        # PATH-based lookup (also works for node)
+        path = shutil.which(runtime)
         if path:
-            return "bun", path
+            return runtime, path
 
     return None
 

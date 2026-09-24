@@ -505,8 +505,11 @@ def fetch_videos(
         # If RSS fails (some channels don't have RSS), fall back to yt-dlp
         if not videos:
             console.print("[yellow]RSS feed failed, falling back to yt-dlp...[/yellow]")
-            # Fetch recent videos using yt-dlp (limit to ~15 for "recent" mode)
-            videos = fetch_recent_with_ytdlp(channel_url, max_videos=max_videos or 15)
+            # ponytail: fetch_recent_with_ytdlp does 2-pass (flat-playlist + per-video --simulate),
+            # but per-video requires cookies YouTube now blocks. fetch_all_with_ytdlp uses
+            # flat-playlist only (single pass, enough metadata). Remove fetch_recent_with_ytdlp
+            # when confirmed no regressions.
+            videos = fetch_all_with_ytdlp(channel_url, max_videos=max_videos or 15)
 
         return videos
     else:

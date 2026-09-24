@@ -9,6 +9,9 @@ LOG_FILE="/tmp/hermes-eckrown-cron.log"
 
 cd "$PROJECT_DIR"
 
+# Ensure JS runtimes (bun/node) are on PATH for yt-dlp NSig challenge solving
+export PATH="$HOME/.bun/bin:$HOME/.nvm/versions/node/v22.21.1/bin:$PATH"
+
 echo "============================================" >> "$LOG_FILE"
 echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Starting ECKrown sync + transcribe run" >> "$LOG_FILE"
 
@@ -47,7 +50,8 @@ async def find_pending():
         print('CHANNEL_NOT_FOUND')
         return
     pending = await db['video_metadata'].find(
-        {'channel_id': 'UCnwxzpFzZNtLH8NgTeAROFA', 'transcript_status': {'\$ne': 'completed'}},
+        {'channel_id': 'UCnwxzpFzZNtLH8NgTeAROFA',
+         'transcript_status': {'\$nin': ['completed', 'failed', 'permanent_fail']}},
         sort=[('published_at', -1)]
     ).to_list(length=50)
     if not pending:

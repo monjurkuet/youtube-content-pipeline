@@ -41,7 +41,7 @@ youtube_api:
   # This bypasses YouTube IP blocks on cloud/VPS IPs by routing through
   # a residential VPN tunnel (ProtonVPN via binancevpn namespace).
   # Set to empty string to disable and use direct connection.
-  proxy_url: "http://127.0.0.1:4001"
+  proxy_url: "http://127.0.0.1:4002"
 
 # Chrome CDP (Cookie Extraction) Configuration
 # When Chrome runs on a remote machine (e.g. Windows desktop), the CDP
